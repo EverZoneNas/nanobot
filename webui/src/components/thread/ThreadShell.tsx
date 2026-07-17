@@ -159,6 +159,7 @@ interface ModelBadgeInfo {
   provider: string | null;
   providerLabel: string | null;
   needsSetup: boolean;
+  smartRoutingBadge?: boolean;
 }
 
 function activeModelPreset(settings: SettingsPayload | null): SettingsPayload["model_presets"][number] | null {
@@ -181,6 +182,23 @@ function resolvedModelProvider(settings: SettingsPayload | null, modelName: stri
 }
 
 function toModelBadgeInfo(modelName: string | null, settings: SettingsPayload | null): ModelBadgeInfo {
+  if (settings?.smart_model_routing?.enabled) {
+    const idlePreset = activeModelPreset(settings);
+    const idleProvider = resolvedModelProvider(settings, idlePreset?.model ?? settings.agent.model ?? null);
+    const idleProviderRow = idleProvider
+      ? settings.providers.find((item) => item.name === idleProvider)
+      : null;
+    return {
+      label: null,
+      provider: null,
+      providerLabel: null,
+      needsSetup: Boolean(
+        !idlePreset?.model || !idleProvider || !idleProviderRow || !idleProviderRow.configured,
+      ),
+      smartRoutingBadge: true,
+    };
+  }
+
   const model = modelName || settings?.agent.model || null;
   const label = toModelBadgeLabel(model);
   const provider = resolvedModelProvider(settings, model);
@@ -362,7 +380,6 @@ export function ThreadShell({
     isStreaming,
     runStartedAt,
     goalState,
-    turnRoutedModel,
     turnRoutingInfo,
     send,
     transcribeAudio,
@@ -402,12 +419,14 @@ export function ThreadShell({
   const showHeroComposer = messages.length === 0 && !loading;
   const wasShowingHeroComposerRef = useRef(showHeroComposer);
   const modelBadge = useMemo(
-    () => toModelBadgeInfo(turnRoutedModel ?? modelName, settings),
-    [turnRoutedModel, modelName, settings],
+    () => toModelBadgeInfo(modelName, settings),
+    [modelName, settings],
   );
   const modelBadgeLabel = modelBadge.needsSetup
     ? t("thread.composer.modelNotConfigured", { defaultValue: "Model not configured" })
-    : modelBadge.label;
+    : modelBadge.smartRoutingBadge
+      ? t("thread.composer.smartModelRoutingBadge", { defaultValue: "Smart" })
+      : modelBadge.label;
   useEffect(() => {
     if (showHeroComposer && !wasShowingHeroComposerRef.current) {
       setHeroGreetingKey(randomHeroGreetingKey());

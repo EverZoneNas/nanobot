@@ -235,6 +235,52 @@ function modelSettings(model: string, provider: string): SettingsPayload {
   };
 }
 
+function smartRoutingSettings(): SettingsPayload {
+  const base = modelSettings("qwen-fast", "deepseek");
+  return {
+    ...base,
+    agent: {
+      ...base.agent,
+      model: "qwen-fast",
+      provider: "deepseek",
+      resolved_provider: "deepseek",
+      model_preset: "local-fast",
+    },
+    smart_model_routing: { enabled: true },
+    model_presets: [
+      {
+        name: "local-fast",
+        label: "local-fast",
+        active: true,
+        is_default: false,
+        model: "qwen-fast",
+        provider: "deepseek",
+        max_tokens: 4096,
+        context_window_tokens: 65536,
+        temperature: 0.7,
+        reasoning_effort: null,
+      },
+      {
+        name: "openrouter-fast",
+        label: "openrouter-fast",
+        active: false,
+        is_default: false,
+        model: "deepseek/deepseek-v4-flash",
+        provider: "openrouter",
+        max_tokens: 4096,
+        context_window_tokens: 65536,
+        temperature: 0.7,
+        reasoning_effort: null,
+      },
+    ],
+    providers: [
+      { name: "deepseek", label: "DeepSeek", configured: true },
+      { name: "openrouter", label: "OpenRouter", configured: true },
+      { name: "openai_codex", label: "OpenAI Codex", configured: true },
+    ],
+  };
+}
+
 describe("ThreadShell", () => {
   beforeEach(() => {
     vi.stubGlobal(
@@ -331,6 +377,63 @@ describe("ThreadShell", () => {
     });
 
     expect(await screen.findByTestId("composer-model-logo-openai_codex")).toBeInTheDocument();
+  });
+
+  it("shows Smart in the composer badge when smart model routing is enabled", async () => {
+    const client = makeClient();
+    render(
+      wrap(
+        client,
+        <ThreadShell
+          session={session("smart-routing-idle")}
+          title="Smart routing"
+          onToggleSidebar={() => {}}
+          settingsSnapshot={smartRoutingSettings()}
+        />,
+        "qwen-fast",
+      ),
+    );
+
+    expect(await screen.findByText("Smart")).toBeInTheDocument();
+    expect(screen.queryByText("qwen-fast")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("composer-model-logo-deepseek")).not.toBeInTheDocument();
+  });
+
+  it("keeps the Smart badge during a routed turn", async () => {
+    const client = makeClient();
+    render(
+      wrap(
+        client,
+        <ThreadShell
+          session={session("smart-routing-live")}
+          title="Smart routing live"
+          onToggleSidebar={() => {}}
+          settingsSnapshot={smartRoutingSettings()}
+        />,
+        "qwen-fast",
+      ),
+    );
+
+    await act(async () => {
+      client._emitTurnRouting("smart-routing-live", {
+        modelName: "deepseek/deepseek-v4-flash",
+        modelPreset: "openrouter-fast",
+        taskKind: "chat",
+        taskType: "research",
+        complexity: "low",
+        ephemeral: true,
+      });
+      client._emitChat("smart-routing-live", {
+        event: "delta",
+        chat_id: "smart-routing-live",
+        text: "Routing response",
+      });
+    });
+
+    expect(await screen.findByText("Smart")).toBeInTheDocument();
+    expect(screen.queryByText("deepseek-v4-flash")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("composer-model-logo-openrouter")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("composer-model-logo-deepseek")).not.toBeInTheDocument();
   });
 
   it("opens model settings from the unconfigured model badge", async () => {

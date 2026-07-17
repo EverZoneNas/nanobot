@@ -849,6 +849,7 @@
       "send": "Send message",
       "stop": "Stop response",
       "modelNotConfigured": "Model not configured",
+      "smartModelRoutingBadge": "Smart",
       "configureModel": "Configure model",
       "queued": {
         "label": "Queued guidance",

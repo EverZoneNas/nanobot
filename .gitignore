@@ -101,3 +101,8 @@ temp/
 exp/
 .playwright-mcp/
 bridge/node_modules/
+
+# Gateway / WebUI runtime (when config lives in repo root)
+run/
+webui/token-usage.json
+webui/websocket_*.jsonl
