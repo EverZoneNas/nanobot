@@ -22,6 +22,7 @@ from nanobot.bus.outbound_events import (
     RuntimeModelUpdatedEvent,
     SessionUpdatedEvent,
     TurnEndEvent,
+    TurnModelRoutedEvent,
 )
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.websocket import (
@@ -873,6 +874,43 @@ async def test_send_broadcasts_runtime_model_updates() -> None:
     assert payload["event"] == "runtime_model_updated"
     assert payload["model_name"] == "openai/gpt-4.1"
     assert payload["model_preset"] == "fast"
+
+
+@pytest.mark.asyncio
+async def test_send_delivers_cache_aware_route_decision() -> None:
+    bus = MagicMock()
+    channel = WebSocketChannel(
+        {"enabled": True, "allowFrom": ["*"]},
+        bus,
+        gateway=_basic_handler(bus),
+    )
+    mock_ws = AsyncMock()
+    channel._attach(mock_ws, "chat-1")
+
+    await channel.send(OutboundMessage(
+        channel="websocket",
+        chat_id="chat-1",
+        content="",
+        event=TurnModelRoutedEvent(
+            model="openai/gpt-4.1-mini",
+            model_preset="fast",
+            candidate_model="anthropic/claude-opus-4-5",
+            candidate_model_preset="deep",
+            decision_reason="kept_for_cache",
+            switch_score=0.05,
+            quality_benefit=0.7,
+            cache_penalty=0.65,
+            estimated_reusable_tokens=16_000,
+        ),
+    ))
+
+    payload = json.loads(mock_ws.send.call_args[0][0])
+    assert payload["event"] == "turn_model_routed"
+    assert payload["model_preset"] == "fast"
+    assert payload["candidate_model_preset"] == "deep"
+    assert payload["decision_reason"] == "kept_for_cache"
+    assert payload["switch_score"] == 0.05
+    assert payload["estimated_reusable_tokens"] == 16_000
 
 
 @pytest.mark.asyncio

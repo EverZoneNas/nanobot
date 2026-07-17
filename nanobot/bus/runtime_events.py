@@ -72,7 +72,7 @@ class RuntimeModelChanged:
 
 @dataclass(frozen=True)
 class TurnModelRouted:
-    """A per-turn ephemeral model route was selected."""
+    """A cache-aware per-turn model route was selected."""
 
     context: RuntimeEventContext
     model: str
@@ -80,6 +80,13 @@ class TurnModelRouted:
     task_kind: str
     task_type: str | None = None
     complexity: str | None = None
+    candidate_model: str | None = None
+    candidate_model_preset: str | None = None
+    decision_reason: str | None = None
+    switch_score: float | None = None
+    quality_benefit: float | None = None
+    cache_penalty: float | None = None
+    estimated_reusable_tokens: int = 0
     ephemeral: bool = True
 
 
@@ -260,6 +267,13 @@ class RuntimeEventPublisher:
         channel: str,
         chat_id: str,
         session_key: str,
+        candidate_model: str | None = None,
+        candidate_model_preset: str | None = None,
+        decision_reason: str | None = None,
+        switch_score: float | None = None,
+        quality_benefit: float | None = None,
+        cache_penalty: float | None = None,
+        estimated_reusable_tokens: int = 0,
         metadata: dict[str, Any] | None = None,
     ) -> None:
         self.bus.publish_nowait(
@@ -275,6 +289,13 @@ class RuntimeEventPublisher:
                 task_kind=task_kind,
                 task_type=task_type,
                 complexity=complexity,
+                candidate_model=candidate_model,
+                candidate_model_preset=candidate_model_preset,
+                decision_reason=decision_reason,
+                switch_score=switch_score,
+                quality_benefit=quality_benefit,
+                cache_penalty=cache_penalty,
+                estimated_reusable_tokens=estimated_reusable_tokens,
             )
         )
 

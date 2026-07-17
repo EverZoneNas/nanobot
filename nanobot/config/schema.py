@@ -145,7 +145,7 @@ class ModelRouteRule(Base):
 
 
 class ModelRoutingConfig(Base):
-    """Per-turn model routing based on task kind, type, and complexity."""
+    """Cache-aware model routing based on task kind, type, and complexity."""
 
     enabled: bool = False
     classifier_preset: str = Field(
@@ -158,6 +158,32 @@ class ModelRoutingConfig(Base):
         default=None,
         validation_alias=AliasChoices("defaultPreset", "default_preset"),
         serialization_alias="defaultPreset",
+    )
+    affinity_ttl_seconds: int = Field(
+        default=300,
+        ge=1,
+        validation_alias=AliasChoices("affinityTtlSeconds", "affinity_ttl_seconds"),
+        serialization_alias="affinityTtlSeconds",
+    )
+    cache_weight: float = Field(
+        default=0.65,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices("cacheWeight", "cache_weight"),
+        serialization_alias="cacheWeight",
+    )
+    switch_threshold: float = Field(
+        default=0.15,
+        ge=-1.0,
+        le=1.0,
+        validation_alias=AliasChoices("switchThreshold", "switch_threshold"),
+        serialization_alias="switchThreshold",
+    )
+    warm_prefix_tokens: int = Field(
+        default=16_000,
+        ge=1,
+        validation_alias=AliasChoices("warmPrefixTokens", "warm_prefix_tokens"),
+        serialization_alias="warmPrefixTokens",
     )
 
 

@@ -249,6 +249,7 @@ export class NanobotClient {
 
   private recordGoalStatusForRunStrip(chatId: string, ev: InboundEvent): void {
     if (ev.event === "turn_end") {
+      this.turnRoutingByChatId.delete(chatId);
       if (this.runStartedAtByChatId.has(chatId)) {
         this.runStartedAtByChatId.delete(chatId);
         this.emitRunStatus(chatId, null);
@@ -512,6 +513,23 @@ export class NanobotClient {
         taskKind: parsed.task_kind,
         taskType: parsed.task_type ?? null,
         complexity: parsed.complexity ?? null,
+        ...(parsed.candidate_model_name !== undefined
+          ? { candidateModelName: parsed.candidate_model_name }
+          : {}),
+        ...(parsed.candidate_model_preset !== undefined
+          ? { candidateModelPreset: parsed.candidate_model_preset }
+          : {}),
+        ...(parsed.decision_reason !== undefined
+          ? { decisionReason: parsed.decision_reason }
+          : {}),
+        ...(parsed.switch_score !== undefined ? { switchScore: parsed.switch_score } : {}),
+        ...(parsed.quality_benefit !== undefined
+          ? { qualityBenefit: parsed.quality_benefit }
+          : {}),
+        ...(parsed.cache_penalty !== undefined ? { cachePenalty: parsed.cache_penalty } : {}),
+        ...(parsed.estimated_reusable_tokens !== undefined
+          ? { estimatedReusableTokens: parsed.estimated_reusable_tokens }
+          : {}),
         ephemeral: parsed.ephemeral,
       };
       this.turnRoutingByChatId.set(parsed.chat_id, routing);

@@ -1,11 +1,12 @@
-"""Task-based per-turn model routing."""
+"""Cache-aware task-based model routing."""
 
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import json_repair
 from loguru import logger
@@ -20,15 +21,27 @@ from nanobot.config.schema import (
     TaskKind,
     TaskType,
 )
-from nanobot.providers.factory import ProviderSnapshot
+from nanobot.providers.factory import (
+    ProviderSnapshot,
+    runtime_provider_cache_identity,
+)
 from nanobot.session.goal_state import sustained_goal_turn
+from nanobot.session.routing_state import (
+    MODEL_ROUTING_AFFINITY_KEY,
+    clear_model_routing_affinity,
+)
 
 _CLASSIFIER_MAX_TOKENS = 128
 _USER_TEXT_MAX_CHARS = 2000
+_COMPLEXITY_BENEFIT: dict[TaskComplexity, float] = {
+    "low": 0.25,
+    "medium": 0.60,
+    "high": 1.0,
+}
 
 _CLASSIFIER_SYSTEM = """You classify user requests for model routing.
 Output JSON only with this shape:
-{"task_type":"coding|research|admin|chat|other","complexity":"low|medium|high","reason":"brief"}
+{"task_type":"coding|research|admin|chat|other","complexity":"low|medium|high","confidence":0.0,"reason":"brief"}
 
 Guidelines:
 - coding: implementation, debugging, refactors, shell automation, multi-file changes
@@ -39,19 +52,35 @@ Guidelines:
 - low: quick, single-step, or conversational
 - medium: moderate scope, a few steps or files
 - high: large, ambiguous, or multi-step work
+- confidence: number from 0.0 to 1.0 indicating classification certainty
 """
 
 BuildInlineSnapshot = Callable[[ModelPresetConfig], ProviderSnapshot]
+RouteDecisionReason = Literal[
+    "initial_candidate",
+    "initial_baseline",
+    "candidate_unchanged",
+    "same_cache_identity",
+    "switched_score",
+    "kept_for_cache",
+    "classifier_fallback",
+    "no_candidate_affinity",
+    "no_candidate_baseline",
+    "deterministic_rule",
+    "dream_override",
+]
 
 
 @dataclass(slots=True)
 class RoutingContext:
-    """Inputs used to resolve a per-turn model route."""
+    """Inputs used to resolve a model route."""
 
     user_text: str
     task_kind: TaskKind
     task_type: TaskType | None = None
     complexity: TaskComplexity | None = None
+    confidence: float | None = None
+    prompt_tokens_estimate: int = 0
     session_metadata: dict[str, Any] | None = None
     message_metadata: dict[str, Any] | None = None
     session_key: str | None = None
@@ -59,7 +88,7 @@ class RoutingContext:
 
 @dataclass(slots=True)
 class TurnRoute:
-    """Resolved ephemeral model route for one agent run."""
+    """Resolved model and generation settings for one agent run."""
 
     snapshot: ProviderSnapshot
     preset_name: str
@@ -67,6 +96,7 @@ class TurnRoute:
     task_kind: TaskKind
     task_type: TaskType | None = None
     complexity: TaskComplexity | None = None
+    confidence: float | None = None
 
     def to_run_spec_kwargs(self) -> dict[str, Any]:
         return {
@@ -78,6 +108,20 @@ class TurnRoute:
             "reasoning_effort": self.preset.reasoning_effort,
             "context_window_tokens": self.snapshot.context_window_tokens,
         }
+
+
+@dataclass(slots=True)
+class RoutingDecision:
+    """Selected route plus cache-aware scoring diagnostics."""
+
+    selected: TurnRoute
+    candidate: TurnRoute | None
+    reason: RouteDecisionReason
+    prompt_tokens_estimate: int = 0
+    quality_benefit: float | None = None
+    cache_penalty: float | None = None
+    switch_score: float | None = None
+    estimated_reusable_tokens: int = 0
 
 
 def infer_task_kind(
@@ -125,9 +169,11 @@ def _truncate_user_text(text: str) -> str:
     return text[:_USER_TEXT_MAX_CHARS] + "…"
 
 
-def _parse_classifier_response(content: str | None) -> tuple[TaskType | None, TaskComplexity | None]:
+def _parse_classifier_response(
+    content: str | None,
+) -> tuple[TaskType | None, TaskComplexity | None, float | None]:
     if not content:
-        return None, None
+        return None, None, None
     stripped = content.strip()
     if stripped.startswith("```"):
         lines = stripped.splitlines()
@@ -142,9 +188,9 @@ def _parse_classifier_response(content: str | None) -> tuple[TaskType | None, Ta
         try:
             parsed = json_repair.loads(stripped)
         except Exception:
-            return None, None
+            return None, None, None
     if not isinstance(parsed, dict):
-        return None, None
+        return None, None, None
 
     task_type = parsed.get("task_type")
     complexity = parsed.get("complexity")
@@ -152,7 +198,13 @@ def _parse_classifier_response(content: str | None) -> tuple[TaskType | None, Ta
     valid_complexity = {"low", "medium", "high"}
     resolved_type = task_type if task_type in valid_types else None
     resolved_complexity = complexity if complexity in valid_complexity else None
-    return resolved_type, resolved_complexity
+    if resolved_type is None or resolved_complexity is None:
+        return resolved_type, resolved_complexity, None
+
+    confidence = parsed.get("confidence", 0.5)
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        confidence = 0.5
+    return resolved_type, resolved_complexity, max(0.0, min(1.0, float(confidence)))
 
 
 def _rule_matches(ctx: RoutingContext, rule: ModelRouteRule) -> bool:
@@ -167,7 +219,7 @@ def _rule_matches(ctx: RoutingContext, rule: ModelRouteRule) -> bool:
 
 
 class ModelRouter:
-    """Resolve per-turn model presets from task context."""
+    """Resolve model presets using task classification and cache affinity."""
 
     def __init__(
         self,
@@ -190,12 +242,16 @@ class ModelRouter:
     def enabled(self) -> bool:
         return self._routing.enabled
 
+    @staticmethod
+    def _cache_identity(snapshot: ProviderSnapshot) -> str:
+        return snapshot.cache_identity or runtime_provider_cache_identity(
+            snapshot.provider,
+            snapshot.model,
+        )
+
     def _refresh_classifier_snapshot(self) -> ProviderSnapshot:
         signature = ("classifier", self._routing.classifier_preset)
-        if (
-            self._classifier_snapshot is not None
-            and self._classifier_signature == signature
-        ):
+        if self._classifier_snapshot is not None and self._classifier_signature == signature:
             return self._classifier_snapshot
         snapshot = self._load_preset(self._routing.classifier_preset)
         self._classifier_snapshot = snapshot
@@ -208,12 +264,40 @@ class ModelRouter:
         snapshot.provider.generation = preset.to_generation_settings()
         return snapshot, preset
 
+    def _route_for_preset(self, name: str, ctx: RoutingContext) -> TurnRoute:
+        snapshot, preset = self._snapshot_for_preset(name)
+        return TurnRoute(
+            snapshot=snapshot,
+            preset_name=name,
+            preset=preset,
+            task_kind=ctx.task_kind,
+            task_type=ctx.task_type,
+            complexity=ctx.complexity,
+            confidence=ctx.confidence,
+        )
+
+    def _baseline_route(
+        self,
+        ctx: RoutingContext,
+        baseline_snapshot: ProviderSnapshot,
+        baseline_preset: str | None,
+    ) -> TurnRoute:
+        name = baseline_preset or "default"
+        return TurnRoute(
+            snapshot=baseline_snapshot,
+            preset_name=name,
+            preset=self._resolve_preset(name),
+            task_kind=ctx.task_kind,
+            task_type=ctx.task_type,
+            complexity=ctx.complexity,
+            confidence=ctx.confidence,
+        )
+
     def _dream_override_snapshot(self) -> ProviderSnapshot | None:
         override = (self._dream.model_override or "").strip()
         if not override:
             return None
-        preset = ModelPresetConfig(model=override, provider="auto")
-        return self._build_inline_snapshot(preset)
+        return self._build_inline_snapshot(ModelPresetConfig(model=override, provider="auto"))
 
     def _match_rule(self, ctx: RoutingContext) -> str | None:
         for rule in self._routing.rules:
@@ -221,7 +305,10 @@ class ModelRouter:
                 return rule.preset
         return self._routing.default_preset
 
-    async def _classify(self, user_text: str) -> tuple[TaskType | None, TaskComplexity | None]:
+    async def _classify(
+        self,
+        user_text: str,
+    ) -> tuple[TaskType | None, TaskComplexity | None, float | None]:
         snapshot = self._refresh_classifier_snapshot()
         provider = snapshot.provider
         preset = self._resolve_preset(self._routing.classifier_preset)
@@ -239,71 +326,201 @@ class ModelRouter:
             )
         except Exception:
             logger.warning("Model routing classifier call failed")
-            return None, None
+            return None, None, None
         if response.finish_reason == "error":
             logger.warning(
                 "Model routing classifier returned error: {}",
                 (response.content or "")[:200],
             )
-            return None, None
-        task_type, complexity = _parse_classifier_response(response.content)
+            return None, None, None
+        task_type, complexity, confidence = _parse_classifier_response(response.content)
         logger.debug(
-            "Model routing classifier: task_type={} complexity={} model={}",
+            "Model routing classifier: task_type={} complexity={} confidence={} model={}",
             task_type,
             complexity,
+            confidence,
             preset.model,
         )
-        return task_type, complexity
+        return task_type, complexity, confidence
+
+    def _load_affinity(self, ctx: RoutingContext) -> tuple[TurnRoute, dict[str, Any]] | None:
+        metadata = ctx.session_metadata
+        if not isinstance(metadata, dict):
+            return None
+        raw = metadata.get(MODEL_ROUTING_AFFINITY_KEY)
+        if not isinstance(raw, dict):
+            return None
+        updated_at = raw.get("updated_at")
+        if not isinstance(updated_at, (int, float)) or (
+            time.time() - float(updated_at) > self._routing.affinity_ttl_seconds
+        ):
+            clear_model_routing_affinity(metadata)
+            return None
+        name = raw.get("preset")
+        if not isinstance(name, str) or not name:
+            clear_model_routing_affinity(metadata)
+            return None
+        try:
+            route = self._route_for_preset(name, ctx)
+        except (KeyError, ValueError):
+            clear_model_routing_affinity(metadata)
+            return None
+        if raw.get("cache_identity") != self._cache_identity(route.snapshot):
+            clear_model_routing_affinity(metadata)
+            return None
+        return route, raw
 
     async def resolve_turn_route(
         self,
         ctx: RoutingContext,
         *,
-        baseline_model: str,
+        baseline_snapshot: ProviderSnapshot,
         baseline_preset: str | None,
-    ) -> TurnRoute | None:
-        if not self._routing.enabled:
-            return None
+    ) -> RoutingDecision:
+        baseline = self._baseline_route(ctx, baseline_snapshot, baseline_preset)
 
         if ctx.task_kind == "dream":
             override_snapshot = self._dream_override_snapshot()
             if override_snapshot is not None:
-                preset = ModelPresetConfig(model=override_snapshot.model, provider="auto")
-                return TurnRoute(
+                route = TurnRoute(
                     snapshot=override_snapshot,
                     preset_name="dream:override",
-                    preset=preset,
+                    preset=ModelPresetConfig(model=override_snapshot.model, provider="auto"),
                     task_kind=ctx.task_kind,
                 )
+                return RoutingDecision(route, route, "dream_override")
 
-        working = RoutingContext(
-            user_text=ctx.user_text,
-            task_kind=ctx.task_kind,
-            task_type=ctx.task_type,
-            complexity=ctx.complexity,
-            session_metadata=ctx.session_metadata,
-            message_metadata=ctx.message_metadata,
-            session_key=ctx.session_key,
-        )
+        if ctx.task_kind != "chat":
+            preset_name = self._match_rule(ctx)
+            if preset_name is None:
+                return RoutingDecision(baseline, None, "no_candidate_baseline")
+            candidate = self._route_for_preset(preset_name, ctx)
+            return RoutingDecision(candidate, candidate, "deterministic_rule")
 
-        if working.task_kind == "chat":
-            task_type, complexity = await self._classify(working.user_text)
-            working.task_type = task_type
-            working.complexity = complexity
+        task_type, complexity, confidence = await self._classify(ctx.user_text)
+        ctx.task_type = task_type
+        ctx.complexity = complexity
+        ctx.confidence = confidence
+        affinity = self._load_affinity(ctx)
 
-        preset_name = self._match_rule(working)
+        if task_type is None or complexity is None:
+            if affinity is not None:
+                return RoutingDecision(
+                    affinity[0],
+                    None,
+                    "classifier_fallback",
+                    prompt_tokens_estimate=ctx.prompt_tokens_estimate,
+                )
+            fallback_name = self._routing.default_preset
+            if fallback_name is None:
+                return RoutingDecision(
+                    baseline,
+                    None,
+                    "initial_baseline",
+                    prompt_tokens_estimate=ctx.prompt_tokens_estimate,
+                )
+            candidate = self._route_for_preset(fallback_name, ctx)
+            return RoutingDecision(
+                candidate,
+                candidate,
+                "initial_candidate",
+                prompt_tokens_estimate=ctx.prompt_tokens_estimate,
+            )
+
+        preset_name = self._match_rule(ctx)
         if preset_name is None:
-            return None
+            if affinity is not None:
+                return RoutingDecision(
+                    affinity[0],
+                    None,
+                    "no_candidate_affinity",
+                    prompt_tokens_estimate=ctx.prompt_tokens_estimate,
+                )
+            return RoutingDecision(
+                baseline,
+                None,
+                "no_candidate_baseline",
+                prompt_tokens_estimate=ctx.prompt_tokens_estimate,
+            )
 
-        snapshot, preset = self._snapshot_for_preset(preset_name)
-        if snapshot.model == baseline_model and preset_name == (baseline_preset or "default"):
-            return None
+        candidate = self._route_for_preset(preset_name, ctx)
+        if affinity is None:
+            return RoutingDecision(
+                candidate,
+                candidate,
+                "initial_candidate",
+                prompt_tokens_estimate=ctx.prompt_tokens_estimate,
+            )
 
-        return TurnRoute(
-            snapshot=snapshot,
-            preset_name=preset_name,
-            preset=preset,
-            task_kind=working.task_kind,
-            task_type=working.task_type,
-            complexity=working.complexity,
+        current, state = affinity
+        if candidate.preset_name == current.preset_name:
+            return RoutingDecision(
+                candidate,
+                candidate,
+                "candidate_unchanged",
+                prompt_tokens_estimate=ctx.prompt_tokens_estimate,
+            )
+        if self._cache_identity(candidate.snapshot) == self._cache_identity(current.snapshot):
+            return RoutingDecision(
+                candidate,
+                candidate,
+                "same_cache_identity",
+                prompt_tokens_estimate=ctx.prompt_tokens_estimate,
+            )
+
+        previous_prompt = max(0, int(state.get("prompt_tokens_estimate") or 0))
+        cached_tokens = max(0, int(state.get("cached_tokens") or 0))
+        reusable_tokens = min(
+            max(0, ctx.prompt_tokens_estimate),
+            max(previous_prompt, cached_tokens),
         )
+        resolved_confidence = confidence if confidence is not None else 0.5
+        quality_benefit = resolved_confidence * _COMPLEXITY_BENEFIT[complexity]
+        cache_penalty = self._routing.cache_weight * min(
+            reusable_tokens / self._routing.warm_prefix_tokens,
+            1.0,
+        )
+        switch_score = quality_benefit - cache_penalty
+        selected = candidate if switch_score >= self._routing.switch_threshold else current
+        reason: RouteDecisionReason = (
+            "switched_score" if selected is candidate else "kept_for_cache"
+        )
+        return RoutingDecision(
+            selected,
+            candidate,
+            reason,
+            prompt_tokens_estimate=ctx.prompt_tokens_estimate,
+            quality_benefit=quality_benefit,
+            cache_penalty=cache_penalty,
+            switch_score=switch_score,
+            estimated_reusable_tokens=reusable_tokens,
+        )
+
+    def record_outcome(
+        self,
+        decision: RoutingDecision,
+        *,
+        session_metadata: dict[str, Any] | None,
+        usage: dict[str, int],
+        stop_reason: str,
+    ) -> None:
+        """Persist cache affinity after a successful normal chat run."""
+        route = decision.selected
+        if (
+            route.task_kind != "chat"
+            or not isinstance(session_metadata, dict)
+            or stop_reason in {"error", "tool_error", "empty_final_response"}
+        ):
+            return
+        session_metadata[MODEL_ROUTING_AFFINITY_KEY] = {
+            "version": 1,
+            "preset": route.preset_name,
+            "model": route.snapshot.model,
+            "cache_identity": self._cache_identity(route.snapshot),
+            "task_type": route.task_type,
+            "complexity": route.complexity,
+            "confidence": route.confidence,
+            "prompt_tokens_estimate": max(0, decision.prompt_tokens_estimate),
+            "cached_tokens": max(0, int(usage.get("cached_tokens") or 0)),
+            "updated_at": time.time(),
+        }

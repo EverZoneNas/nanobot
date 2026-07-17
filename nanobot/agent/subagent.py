@@ -21,6 +21,7 @@ from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.config.schema import AgentDefaults, ToolsConfig
 from nanobot.providers.base import LLMProvider
+from nanobot.providers.factory import ProviderSnapshot, runtime_provider_cache_identity
 from nanobot.security.workspace_access import (
     WorkspaceScope,
     bind_workspace_scope,
@@ -257,7 +258,7 @@ class SubagentManager:
             token = bind_workspace_scope(workspace_scope) if workspace_scope is not None else None
             route_spec_kwargs: dict[str, Any] = {}
             if self._model_router is not None and self._model_router.enabled:
-                route = await self._model_router.resolve_turn_route(
+                decision = await self._model_router.resolve_turn_route(
                     RoutingContext(
                         user_text=task,
                         task_kind=infer_task_kind(
@@ -268,17 +269,28 @@ class SubagentManager:
                         ),
                         session_key=sess_key,
                     ),
-                    baseline_model=self.model,
+                    baseline_snapshot=ProviderSnapshot(
+                        provider=self.provider,
+                        model=self.model,
+                        context_window_tokens=0,
+                        signature=(),
+                        cache_identity=runtime_provider_cache_identity(
+                            self.provider,
+                            self.model,
+                        ),
+                    ),
                     baseline_preset=self._model_preset,
                 )
-                if route is not None:
+                route = decision.selected
+                if decision.reason != "no_candidate_baseline":
                     route_spec_kwargs = route.to_run_spec_kwargs()
-                    logger.info(
-                        "Subagent [{}] model route: preset={} model={}",
-                        task_id,
-                        route.preset_name,
-                        route.snapshot.model,
-                    )
+                logger.info(
+                    "Subagent [{}] model route: preset={} model={} reason={}",
+                    task_id,
+                    route.preset_name,
+                    route.snapshot.model,
+                    decision.reason,
+                )
             try:
                 result = await self.runner.run(AgentRunSpec(
                     initial_messages=messages,

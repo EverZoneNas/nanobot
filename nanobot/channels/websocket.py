@@ -880,6 +880,13 @@ class WebSocketChannel(BaseChannel):
                 task_kind=event.task_kind,
                 task_type=event.task_type,
                 complexity=event.complexity,
+                candidate_model=event.candidate_model,
+                candidate_model_preset=event.candidate_model_preset,
+                decision_reason=event.decision_reason,
+                switch_score=event.switch_score,
+                quality_benefit=event.quality_benefit,
+                cache_penalty=event.cache_penalty,
+                estimated_reusable_tokens=event.estimated_reusable_tokens,
             )
             return
 
@@ -1213,6 +1220,13 @@ class WebSocketChannel(BaseChannel):
         task_kind: str = "chat",
         task_type: str | None = None,
         complexity: str | None = None,
+        candidate_model: str | None = None,
+        candidate_model_preset: str | None = None,
+        decision_reason: str | None = None,
+        switch_score: float | None = None,
+        quality_benefit: float | None = None,
+        cache_penalty: float | None = None,
+        estimated_reusable_tokens: int = 0,
     ) -> None:
         """Notify websocket clients about an ephemeral per-turn model route."""
         conns = list(self._subs.get(chat_id, ()))
@@ -1231,6 +1245,19 @@ class WebSocketChannel(BaseChannel):
             body["task_type"] = task_type.strip()
         if isinstance(complexity, str) and complexity.strip():
             body["complexity"] = complexity.strip()
+        if isinstance(candidate_model, str) and candidate_model.strip():
+            body["candidate_model_name"] = candidate_model.strip()
+        if isinstance(candidate_model_preset, str) and candidate_model_preset.strip():
+            body["candidate_model_preset"] = candidate_model_preset.strip()
+        if isinstance(decision_reason, str) and decision_reason.strip():
+            body["decision_reason"] = decision_reason.strip()
+        if switch_score is not None:
+            body["switch_score"] = switch_score
+        if quality_benefit is not None:
+            body["quality_benefit"] = quality_benefit
+        if cache_penalty is not None:
+            body["cache_penalty"] = cache_penalty
+        body["estimated_reusable_tokens"] = max(0, estimated_reusable_tokens)
         raw = json.dumps(body, ensure_ascii=False)
         for connection in conns:
             await self._safe_send_to(connection, raw, label=" turn_model_routed ")

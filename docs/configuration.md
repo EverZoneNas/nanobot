@@ -1383,13 +1383,14 @@ Set `agents.defaults.modelPreset` to choose the startup preset. When `modelPrese
 
 ### Model Routing
 
-`agents.defaults.smartModelRouting` enables per-turn model selection based on task kind, task type, and complexity. Routing is **ephemeral**: it affects only the current turn (or subagent run) and does not change the global `/model` default.
+`agents.defaults.smartModelRouting` enables cache-aware model selection based on task kind, task type, and complexity. Routing is **ephemeral**: it affects only the current turn (or subagent run) and does not change the global `/model` default. For normal chat sessions, nanobot keeps short-lived model affinity so a marginal route change does not discard a warm provider prompt cache.
 
 When enabled, nanobot:
 
 1. Uses deterministic rules for known contexts (`subagent`, `cron`, `dream`, `sustained_goal`).
-2. Runs a fast classifier model for normal chat turns to estimate `task_type` and `complexity`.
-3. Picks the first matching rule and runs that turn with the mapped `modelPresets` entry.
+2. Runs a fast classifier model for every normal chat turn to estimate `task_type`, `complexity`, and confidence.
+3. Resolves the first matching rule as the candidate route.
+4. Switches models only when the candidate's estimated quality benefit outweighs the current route's prompt-cache penalty. Presets resolving to the same provider endpoint and model switch without a cache penalty.
 
 ```json
 {
@@ -1414,6 +1415,10 @@ When enabled, nanobot:
       "smartModelRouting": {
         "enabled": true,
         "classifierPreset": "fast",
+        "affinityTtlSeconds": 300,
+        "cacheWeight": 0.65,
+        "switchThreshold": 0.15,
+        "warmPrefixTokens": 16000,
         "rules": [
           { "match": { "taskKind": "subagent" }, "preset": "deep" },
           { "match": { "taskKind": "sustained_goal" }, "preset": "deep" },
@@ -1437,6 +1442,10 @@ When enabled, nanobot:
 | `classifierPreset` | Preset used for the lightweight chat-turn classifier. Must exist in `modelPresets` when routing is enabled. |
 | `rules` | Ordered list of match rules. First match wins; put more specific rules first. |
 | `defaultPreset` | Optional fallback preset when the classifier fails or no rule matches. |
+| `affinityTtlSeconds` | Seconds of inactivity before the current chat route and cache observations expire. Default `300`. |
+| `cacheWeight` | Maximum cache-loss penalty applied to cross-model switches, from `0.0` to `1.0`. Default `0.65`. |
+| `switchThreshold` | Minimum quality-minus-cache score required to switch models. Default `0.15`. |
+| `warmPrefixTokens` | Reusable prompt-token estimate at which the full `cacheWeight` penalty applies. Default `16000`. |
 
 Rule `match` fields (all optional except that at least one should be set per rule):
 
@@ -1448,7 +1457,18 @@ Rule `match` fields (all optional except that at least one should be set per rul
 
 `agents.defaults.dream.modelOverride` still applies for Dream runs when set; it takes precedence over routing rules for `taskKind: dream`.
 
-The WebUI shows ephemeral routed models in the composer badge for the active turn via the `turn_model_routed` websocket event.
+For cross-model chat candidates, nanobot calculates:
+
+```text
+qualityBenefit = confidence × {low: 0.25, medium: 0.60, high: 1.00}
+reusableTokens = min(currentPromptEstimate, max(previousPromptEstimate, cachedTokens))
+cachePenalty = cacheWeight × min(reusableTokens / warmPrefixTokens, 1.0)
+switchScore = qualityBenefit - cachePenalty
+```
+
+The candidate is selected when `switchScore >= switchThreshold`; otherwise the current route is retained. If classification fails, an unexpired affinity is retained before falling back to `defaultPreset` or the global model. Affinity is cleared by `/new`, session forks, persisted compaction, TTL expiry, removed presets, or provider/model identity changes.
+
+The WebUI shows the selected model in the composer badge and includes the cache-routing reason in its tooltip. The `turn_model_routed` websocket event also includes the candidate route, decision reason, score components, and estimated reusable tokens.
 
 ### Model Fallbacks
 

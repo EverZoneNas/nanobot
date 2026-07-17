@@ -808,7 +808,11 @@ export function useNanobotStream(
     setStreamError(null);
     setRunStartedAt(chatId ? client.getRunStartedAt(chatId) : null);
     setGoalState(chatId ? client.getGoalState(chatId) : undefined);
-    const routing = chatId ? client.getTurnRoutingInfo(chatId) ?? null : null;
+    const routing = (
+      chatId && typeof client.getTurnRoutingInfo === "function"
+        ? client.getTurnRoutingInfo(chatId) ?? null
+        : null
+    );
     setTurnRoutingInfo(routing);
     setTurnRoutedModel(routing?.modelName ?? null);
     buffer.current = null;
@@ -828,6 +832,7 @@ export function useNanobotStream(
 
   useEffect(() => {
     if (!chatId) return;
+    if (typeof client.onTurnModelRouted !== "function") return;
     return client.onTurnModelRouted((routedChatId, routing) => {
       if (routedChatId === chatId) {
         setTurnRoutingInfo(routing);
@@ -943,6 +948,8 @@ export function useNanobotStream(
           return finalized;
         });
         suppressStreamUntilTurnEndRef.current = false;
+        setTurnRoutingInfo(null);
+        setTurnRoutedModel(null);
         onTurnEnd?.();
         return;
       }

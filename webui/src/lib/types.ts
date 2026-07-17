@@ -204,6 +204,13 @@ export interface TurnRoutingInfo {
   taskKind?: string;
   taskType?: string | null;
   complexity?: string | null;
+  candidateModelName?: string | null;
+  candidateModelPreset?: string | null;
+  decisionReason?: ModelRoutingDecisionReason | null;
+  switchScore?: number | null;
+  qualityBenefit?: number | null;
+  cachePenalty?: number | null;
+  estimatedReusableTokens?: number;
   ephemeral?: boolean;
 }
 
@@ -843,6 +850,34 @@ export interface InboundTurnMetadata {
   turn_seq?: number;
 }
 
+export type ModelRoutingDecisionReason =
+  | "initial_candidate"
+  | "initial_baseline"
+  | "candidate_unchanged"
+  | "same_cache_identity"
+  | "switched_score"
+  | "kept_for_cache"
+  | "classifier_fallback"
+  | "no_candidate_affinity"
+  | "no_candidate_baseline"
+  | "deterministic_rule"
+  | "dream_override";
+
+export interface TurnModelRoutePayload {
+  model_name: string;
+  model_preset?: string | null;
+  task_kind?: string;
+  task_type?: string | null;
+  complexity?: string | null;
+  candidate_model_name?: string | null;
+  candidate_model_preset?: string | null;
+  decision_reason?: ModelRoutingDecisionReason | null;
+  switch_score?: number | null;
+  quality_benefit?: number | null;
+  cache_penalty?: number | null;
+  estimated_reusable_tokens?: number;
+}
+
 export type InboundEvent =
   | { event: "ready"; chat_id: string; client_id: string }
   | { event: "attached"; chat_id: string }
@@ -905,6 +940,13 @@ export type InboundEvent =
       task_kind?: string;
       task_type?: string | null;
       complexity?: string | null;
+      candidate_model_name?: string | null;
+      candidate_model_preset?: string | null;
+      decision_reason?: ModelRoutingDecisionReason | null;
+      switch_score?: number | null;
+      quality_benefit?: number | null;
+      cache_penalty?: number | null;
+      estimated_reusable_tokens?: number;
       ephemeral?: boolean;
     } & InboundTurnMetadata)
   | ({
