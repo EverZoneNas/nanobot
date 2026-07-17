@@ -91,6 +91,7 @@ nano.*.save
 .env.*
 !.env.example
 start-nanobot.sh
+!start-nanobot.sh.example
 
 # Logs & temp
 *.log
