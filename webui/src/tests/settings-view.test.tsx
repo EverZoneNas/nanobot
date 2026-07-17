@@ -30,6 +30,9 @@ function settingsPayload(): SettingsPayload {
       bot_icon: "nb",
       tool_hint_max_length: 40,
     },
+    smart_model_routing: {
+      enabled: false,
+    },
     model_presets: [{
       name: "default",
       label: "Default",
@@ -987,6 +990,38 @@ describe("SettingsView Apps catalog", () => {
 
     fireEvent.pointerDown(configurationButton!);
     expect(await screen.findByText("Add configuration")).toBeInTheDocument();
+  });
+
+  it("disables the model preset picker when smart model routing is enabled", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/settings") {
+          return jsonResponse({
+            ...settingsPayload(),
+            smart_model_routing: { enabled: true },
+          });
+        }
+        if (url === "/api/settings/cli-apps") {
+          return jsonResponse({ apps: [], installed_count: 0 });
+        }
+        if (url === "/api/settings/mcp-presets") {
+          return jsonResponse({ presets: [], installed_count: 0 });
+        }
+        return { ok: false, status: 404, json: async () => ({}) } as Response;
+      }),
+    );
+
+    renderSettingsView({ initialSection: "models" });
+
+    expect(await screen.findByText("Smart model routing")).toBeInTheDocument();
+    const configurationButton = await screen.findByRole("button", {
+      name: "Current configuration",
+    });
+    expect(configurationButton).toBeDisabled();
+    fireEvent.pointerDown(configurationButton);
+    expect(screen.queryByText("Add configuration")).not.toBeInTheDocument();
   });
 
   it("loads provider models and lets users choose one without typing the id manually", async () => {

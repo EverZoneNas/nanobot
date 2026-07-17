@@ -18,6 +18,7 @@ import type {
   OutboundMedia,
   GoalStateWsPayload,
   ToolProgressEvent,
+  TurnRoutingInfo,
   UIImage,
   UIFileEdit,
   UIMessage,
@@ -524,6 +525,8 @@ export function useNanobotStream(
   goalState: GoalStateWsPayload | undefined;
   /** Latest ephemeral per-turn routed model for this chat, if any. */
   turnRoutedModel: string | null;
+  /** Latest per-turn routing metadata for this chat, if any. */
+  turnRoutingInfo: TurnRoutingInfo | null;
   send: (content: string, images?: SendImage[], options?: SendOptions) => void;
   transcribeAudio: (dataUrl: string, options?: { durationMs?: number }) => Promise<string>;
   stop: () => void;
@@ -544,6 +547,7 @@ export function useNanobotStream(
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [goalState, setGoalState] = useState<GoalStateWsPayload | undefined>(undefined);
   const [turnRoutedModel, setTurnRoutedModel] = useState<string | null>(null);
+  const [turnRoutingInfo, setTurnRoutingInfo] = useState<TurnRoutingInfo | null>(null);
   const [streamError, setStreamError] = useState<StreamError | null>(null);
   const buffer = useRef<StreamBuffer | null>(null);
   const activeAssistantRef = useRef<ActiveAssistantCursor | null>(null);
@@ -804,7 +808,9 @@ export function useNanobotStream(
     setStreamError(null);
     setRunStartedAt(chatId ? client.getRunStartedAt(chatId) : null);
     setGoalState(chatId ? client.getGoalState(chatId) : undefined);
-    setTurnRoutedModel(null);
+    const routing = chatId ? client.getTurnRoutingInfo(chatId) ?? null : null;
+    setTurnRoutingInfo(routing);
+    setTurnRoutedModel(routing?.modelName ?? null);
     buffer.current = null;
     activeAssistantRef.current = null;
     closedAssistantStreamIdsRef.current.clear();
@@ -822,9 +828,10 @@ export function useNanobotStream(
 
   useEffect(() => {
     if (!chatId) return;
-    return client.onTurnModelRouted((routedChatId, modelName) => {
+    return client.onTurnModelRouted((routedChatId, routing) => {
       if (routedChatId === chatId) {
-        setTurnRoutedModel(modelName);
+        setTurnRoutingInfo(routing);
+        setTurnRoutedModel(routing.modelName);
       }
     });
   }, [chatId, client]);
@@ -936,7 +943,6 @@ export function useNanobotStream(
           return finalized;
         });
         suppressStreamUntilTurnEndRef.current = false;
-        setTurnRoutedModel(null);
         onTurnEnd?.();
         return;
       }
@@ -1230,6 +1236,7 @@ export function useNanobotStream(
     runStartedAt,
     goalState,
     turnRoutedModel,
+    turnRoutingInfo,
     send,
     transcribeAudio,
     stop,

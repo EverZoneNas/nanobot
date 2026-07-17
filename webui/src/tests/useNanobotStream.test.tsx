@@ -12,6 +12,9 @@ function fakeClient() {
   const handlers = new Map<string, Set<(ev: InboundEvent) => void>>();
   const runStartedAtByChatId = new Map<string, number>();
   const goalStateByChatId = new Map<string, GoalStateWsPayload>();
+  const turnRoutingByChatId = new Map<string, import("@/lib/types").TurnRoutingInfo>();
+  const turnRoutingHandlers =
+    new Set<(chatId: string, routing: import("@/lib/types").TurnRoutingInfo) => void>();
 
   function recordGoalStatusForRunStrip(chatId: string, ev: InboundEvent) {
     if (ev.event === "turn_end") {
@@ -49,6 +52,13 @@ function fakeClient() {
       getGoalState(chatId: string) {
         return goalStateByChatId.get(chatId);
       },
+      getTurnRoutingInfo(chatId: string) {
+        return turnRoutingByChatId.get(chatId);
+      },
+      onTurnModelRouted(handler: (chatId: string, routing: import("@/lib/types").TurnRoutingInfo) => void) {
+        turnRoutingHandlers.add(handler);
+        return () => turnRoutingHandlers.delete(handler);
+      },
       onChat(chatId: string, h: (ev: InboundEvent) => void) {
         let set = handlers.get(chatId);
         if (!set) {
@@ -65,6 +75,10 @@ function fakeClient() {
       connect: vi.fn(),
       close: vi.fn(),
       updateUrl: vi.fn(),
+    },
+    emitTurnRouting(chatId: string, routing: import("@/lib/types").TurnRoutingInfo) {
+      turnRoutingByChatId.set(chatId, routing);
+      turnRoutingHandlers.forEach((handler) => handler(chatId, routing));
     },
     emit(chatId: string, ev: InboundEvent) {
       recordGoalStatusForRunStrip(chatId, ev);
@@ -244,6 +258,47 @@ describe("useNanobotStream", () => {
       role: "assistant",
       content: "fresh",
     });
+  });
+
+  it("persists latest turn routing info for the active chat", () => {
+    const fake = fakeClient();
+    fake.emitTurnRouting("chat-route", {
+      modelName: "claude-opus-4-5",
+      modelPreset: "deep",
+      taskKind: "chat",
+      taskType: "coding",
+      complexity: "high",
+      ephemeral: true,
+    });
+
+    const { result } = renderHook(() => useNanobotStream("chat-route", EMPTY_MESSAGES), {
+      wrapper: wrap(fake.client),
+    });
+
+    expect(result.current.turnRoutedModel).toBe("claude-opus-4-5");
+    expect(result.current.turnRoutingInfo).toEqual({
+      modelName: "claude-opus-4-5",
+      modelPreset: "deep",
+      taskKind: "chat",
+      taskType: "coding",
+      complexity: "high",
+      ephemeral: true,
+    });
+
+    act(() => {
+      fake.emitTurnRouting("chat-route", {
+        modelName: "gpt-5.6",
+        modelPreset: "fast",
+        taskKind: "chat",
+        taskType: "research",
+        complexity: "low",
+        ephemeral: true,
+      });
+    });
+
+    expect(result.current.turnRoutedModel).toBe("gpt-5.6");
+    expect(result.current.turnRoutingInfo?.taskType).toBe("research");
+    expect(result.current.turnRoutingInfo?.complexity).toBe("low");
   });
 
   it("starts in streaming mode when history shows pending tool calls", () => {

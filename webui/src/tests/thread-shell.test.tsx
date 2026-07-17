@@ -15,6 +15,9 @@ function makeClient() {
   const chatHandlers = new Map<string, Set<(ev: import("@/lib/types").InboundEvent) => void>>();
   const sessionUpdateHandlers = new Set<(chatId: string, scope?: string) => void>();
   const goalStateByChatId = new Map<string, import("@/lib/types").GoalStateWsPayload>();
+  const turnRoutingByChatId = new Map<string, import("@/lib/types").TurnRoutingInfo>();
+  const turnRoutingHandlers =
+    new Set<(chatId: string, routing: import("@/lib/types").TurnRoutingInfo) => void>();
   return {
     status: "open" as const,
     defaultChatId: null as string | null,
@@ -22,6 +25,15 @@ function makeClient() {
     onRuntimeModelUpdate: () => () => {},
     getRunStartedAt: () => null,
     getGoalState: (chatId: string) => goalStateByChatId.get(chatId),
+    getTurnRoutingInfo: (chatId: string) => turnRoutingByChatId.get(chatId),
+    onTurnModelRouted: (
+      handler: (chatId: string, routing: import("@/lib/types").TurnRoutingInfo) => void,
+    ) => {
+      turnRoutingHandlers.add(handler);
+      return () => {
+        turnRoutingHandlers.delete(handler);
+      };
+    },
     onChat: (chatId: string, handler: (ev: import("@/lib/types").InboundEvent) => void) => {
       let handlers = chatHandlers.get(chatId);
       if (!handlers) {
@@ -56,6 +68,10 @@ function makeClient() {
     },
     _emitSessionUpdate(chatId: string, scope?: string) {
       for (const h of sessionUpdateHandlers) h(chatId, scope);
+    },
+    _emitTurnRouting(chatId: string, routing: import("@/lib/types").TurnRoutingInfo) {
+      turnRoutingByChatId.set(chatId, routing);
+      for (const h of turnRoutingHandlers) h(chatId, routing);
     },
     sendMessage: vi.fn(),
     newChat: vi.fn(),
@@ -249,6 +265,37 @@ describe("ThreadShell", () => {
     fireEvent.click(screen.getByText("Important conversation"));
 
     expect(onGoHome).not.toHaveBeenCalled();
+  });
+
+  it("shows persistent dev routing info in the composer", async () => {
+    const client = makeClient();
+    client._emitTurnRouting("chat-route", {
+      modelName: "claude-opus-4-5",
+      modelPreset: "deep",
+      taskKind: "chat",
+      taskType: "coding",
+      complexity: "high",
+      ephemeral: true,
+    });
+
+    render(
+      wrap(
+        client,
+        <ThreadShell
+          session={session("chat-route")}
+          title="Route debug"
+          onToggleSidebar={() => {}}
+          settingsSnapshot={modelSettings("gpt-4.1-mini", "deepseek")}
+        />,
+      ),
+    );
+
+    await waitFor(() => expect(screen.getByText("Dev route")).toBeInTheDocument());
+    expect(screen.getByText(/preset deep/i)).toBeInTheDocument();
+    expect(screen.getByText(/model claude-opus-4-5/i)).toBeInTheDocument();
+    expect(screen.getByText(/kind chat/i)).toBeInTheDocument();
+    expect(screen.getByText(/type coding/i)).toBeInTheDocument();
+    expect(screen.getByText(/complexity high/i)).toBeInTheDocument();
   });
 
   it("updates the composer model logo when settings snapshot changes", async () => {

@@ -269,6 +269,45 @@ describe("NanobotClient", () => {
     expect(lateHandler).toHaveBeenCalledWith("chat-status", null);
   });
 
+  it("records turn routing info and notifies subscribers with classifier details", () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    const handler = vi.fn();
+    client.onTurnModelRouted(handler);
+    client.connect();
+    lastSocket().fakeOpen();
+    lastSocket().fakeMessage({
+      event: "turn_model_routed",
+      chat_id: "chat-route",
+      model_name: "claude-opus-4-5",
+      model_preset: "deep",
+      task_kind: "chat",
+      task_type: "coding",
+      complexity: "high",
+      ephemeral: true,
+    });
+
+    expect(client.getTurnRoutingInfo("chat-route")).toEqual({
+      modelName: "claude-opus-4-5",
+      modelPreset: "deep",
+      taskKind: "chat",
+      taskType: "coding",
+      complexity: "high",
+      ephemeral: true,
+    });
+    expect(handler).toHaveBeenCalledWith("chat-route", {
+      modelName: "claude-opus-4-5",
+      modelPreset: "deep",
+      taskKind: "chat",
+      taskType: "coding",
+      complexity: "high",
+      ephemeral: true,
+    });
+  });
+
   it("records goal_state per chat_id without an onChat subscriber", () => {
     const client = new NanobotClient({
       url: "ws://test",

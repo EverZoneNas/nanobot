@@ -198,6 +198,15 @@ export interface GoalStateWsPayload {
   objective?: string;
 }
 
+export interface TurnRoutingInfo {
+  modelName: string;
+  modelPreset?: string | null;
+  taskKind?: string;
+  taskType?: string | null;
+  complexity?: string | null;
+  ephemeral?: boolean;
+}
+
 export interface ToolProgressEvent {
   version?: number;
   phase?: "start" | "end" | "error" | string;
@@ -375,6 +384,9 @@ export interface SettingsPayload {
     bot_name: string;
     bot_icon: string;
     tool_hint_max_length: number;
+  };
+  smart_model_routing?: {
+    enabled: boolean;
   };
   model_presets: Array<{
     name: string;
@@ -729,6 +741,7 @@ export interface SettingsUpdate {
   model?: string;
   provider?: string;
   modelPreset?: string | null;
+  smartModelRoutingEnabled?: boolean;
   contextWindowTokens?: number;
   timezone?: string;
   botName?: string;
