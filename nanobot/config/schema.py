@@ -207,10 +207,10 @@ class AgentDefaults(Base):
         serialization_alias="consolidationRatio",
     )  # Consolidation target ratio (0.5 = 50% of budget retained after compression)
     dream: DreamConfig = Field(default_factory=DreamConfig)
-    model_routing: ModelRoutingConfig = Field(
+    smart_model_routing: ModelRoutingConfig = Field(
         default_factory=ModelRoutingConfig,
-        validation_alias=AliasChoices("modelRouting", "model_routing"),
-        serialization_alias="modelRouting",
+        validation_alias=AliasChoices("smartModelRouting", "smart_model_routing"),
+        serialization_alias="smartModelRouting",
     )
 
 
@@ -470,7 +470,7 @@ class Config(BaseSettings):
         for fallback in self.agents.defaults.fallback_models:
             if isinstance(fallback, str) and fallback not in self.model_presets:
                 raise ValueError(f"fallback_models entry {fallback!r} not found in model_presets")
-        routing = self.agents.defaults.model_routing
+        routing = self.agents.defaults.smart_model_routing
         if routing.enabled:
             self._validate_routing_preset(routing.classifier_preset, "classifier_preset")
             if routing.default_preset is not None:
@@ -486,7 +486,7 @@ class Config(BaseSettings):
         if name == "default":
             return
         if name not in self.model_presets:
-            raise ValueError(f"model_routing {field_name} {name!r} not found in model_presets")
+            raise ValueError(f"smart_model_routing {field_name} {name!r} not found in model_presets")
 
     def resolve_default_preset(self) -> ModelPresetConfig:
         """Return the implicit `default` preset from agents.defaults fields."""

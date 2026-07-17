@@ -87,14 +87,14 @@ def _router(
 
 
 def test_config_rejects_unknown_routing_preset() -> None:
-    with pytest.raises(ValueError, match="model_routing"):
+    with pytest.raises(ValueError, match="smart_model_routing"):
         Config.model_validate({
             "modelPresets": {
                 "fast": {"model": "fast-model", "provider": "auto"},
             },
             "agents": {
                 "defaults": {
-                    "modelRouting": {
+                    "smartModelRouting": {
                         "enabled": True,
                         "classifierPreset": "fast",
                         "rules": [{"match": {"complexity": "low"}, "preset": "missing"}],

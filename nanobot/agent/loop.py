@@ -411,7 +411,7 @@ class AgentLoop:
         model_router = extra.pop("model_router", None)
         if model_router is None:
             model_router = ModelRouter(
-                routing=defaults.model_routing,
+                routing=defaults.smart_model_routing,
                 dream=defaults.dream,
                 load_preset=preset_snapshot_loader,
                 build_inline_snapshot=lambda preset: build_provider_snapshot(config, preset=preset),

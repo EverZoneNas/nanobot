@@ -1383,7 +1383,7 @@ Set `agents.defaults.modelPreset` to choose the startup preset. When `modelPrese
 
 ### Model Routing
 
-`agents.defaults.modelRouting` enables per-turn model selection based on task kind, task type, and complexity. Routing is **ephemeral**: it affects only the current turn (or subagent run) and does not change the global `/model` default.
+`agents.defaults.smartModelRouting` enables per-turn model selection based on task kind, task type, and complexity. Routing is **ephemeral**: it affects only the current turn (or subagent run) and does not change the global `/model` default.
 
 When enabled, nanobot:
 
@@ -1411,7 +1411,7 @@ When enabled, nanobot:
   "agents": {
     "defaults": {
       "modelPreset": "fast",
-      "modelRouting": {
+      "smartModelRouting": {
         "enabled": true,
         "classifierPreset": "fast",
         "rules": [
