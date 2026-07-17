@@ -510,6 +510,7 @@ export class NanobotClient {
       const routing: TurnRoutingInfo = {
         modelName: parsed.model_name,
         modelPreset: parsed.model_preset ?? null,
+        ...(parsed.turn_id ? { turnId: parsed.turn_id } : {}),
         taskKind: parsed.task_kind,
         taskType: parsed.task_type ?? null,
         complexity: parsed.complexity ?? null,

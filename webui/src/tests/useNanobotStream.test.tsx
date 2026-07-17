@@ -334,6 +334,51 @@ describe("useNanobotStream", () => {
     expect(result.current.turnRoutingInfo?.complexity).toBe("low");
   });
 
+  it("stamps model routing onto the assistant message for the turn", async () => {
+    const fake = fakeClient();
+    const turnId = "turn-route-stamp";
+    const { result } = renderHook(() => useNanobotStream("chat-route-stamp", EMPTY_MESSAGES), {
+      wrapper: wrap(fake.client),
+    });
+
+    act(() => {
+      fake.emitTurnRouting("chat-route-stamp", {
+        turnId,
+        modelName: "claude-opus-4-5",
+        modelPreset: "deep",
+        taskKind: "chat",
+        taskType: "coding",
+        complexity: "high",
+        ephemeral: true,
+      });
+      fake.emit("chat-route-stamp", {
+        event: "delta",
+        chat_id: "chat-route-stamp",
+        text: "Routed answer",
+        turn_id: turnId,
+        turn_phase: "answer",
+        turn_seq: 2,
+      });
+    });
+    await flushStreamFrame();
+
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0]).toMatchObject({
+      role: "assistant",
+      content: "Routed answer",
+      turnId,
+      modelRouting: {
+        turnId,
+        modelName: "claude-opus-4-5",
+        modelPreset: "deep",
+        taskKind: "chat",
+        taskType: "coding",
+        complexity: "high",
+        ephemeral: true,
+      },
+    });
+  });
+
   it("starts in streaming mode when history shows pending tool calls", () => {
     const fake = fakeClient();
     const initialMessages = [{

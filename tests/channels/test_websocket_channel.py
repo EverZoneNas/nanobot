@@ -902,10 +902,12 @@ async def test_send_delivers_cache_aware_route_decision() -> None:
             cache_penalty=0.65,
             estimated_reusable_tokens=16_000,
         ),
+        metadata={"webui_turn_id": "turn-route-test"},
     ))
 
     payload = json.loads(mock_ws.send.call_args[0][0])
     assert payload["event"] == "turn_model_routed"
+    assert payload["turn_id"] == "turn-route-test"
     assert payload["model_preset"] == "fast"
     assert payload["candidate_model_preset"] == "deep"
     assert payload["decision_reason"] == "kept_for_cache"

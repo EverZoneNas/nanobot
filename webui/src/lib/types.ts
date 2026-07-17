@@ -68,6 +68,8 @@ export interface UIMessage {
   reasoningStreaming?: boolean;
   /** End-to-end wall time for this assistant turn (persisted ``latency_ms`` / ``turn_end``). */
   latencyMs?: number;
+  /** Per-turn smart model routing decision, persisted on the assistant reply. */
+  modelRouting?: TurnRoutingInfo;
   /** Lightweight provenance for proactive assistant messages. */
   source?: UIMessageSource;
   /** Stable protocol metadata for grouping all activity emitted by one user turn. */
@@ -199,6 +201,7 @@ export interface GoalStateWsPayload {
 }
 
 export interface TurnRoutingInfo {
+  turnId?: string;
   modelName: string;
   modelPreset?: string | null;
   taskKind?: string;

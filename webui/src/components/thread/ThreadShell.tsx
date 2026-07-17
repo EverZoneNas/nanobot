@@ -796,7 +796,6 @@ export function ThreadShell({
           onTranscribeAudio={transcribeAudio}
           runStartedAt={runStartedAt}
           goalState={goalState}
-          turnRoutingInfo={turnRoutingInfo}
           workspaceScope={workspaceScope}
           workspaceDefaultScope={workspaceDefaultScope}
           workspaceControls={workspaceControls}
@@ -830,7 +829,6 @@ export function ThreadShell({
           runStartedAt={runStartedAt}
           onTranscribeAudio={transcribeAudio}
           goalState={goalState}
-          turnRoutingInfo={turnRoutingInfo}
           workspaceScope={workspaceScope}
           workspaceDefaultScope={workspaceDefaultScope}
           workspaceControls={workspaceControls}

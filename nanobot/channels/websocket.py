@@ -887,6 +887,7 @@ class WebSocketChannel(BaseChannel):
                 quality_benefit=event.quality_benefit,
                 cache_penalty=event.cache_penalty,
                 estimated_reusable_tokens=event.estimated_reusable_tokens,
+                metadata=msg.metadata,
             )
             return
 
@@ -1227,11 +1228,12 @@ class WebSocketChannel(BaseChannel):
         quality_benefit: float | None = None,
         cache_penalty: float | None = None,
         estimated_reusable_tokens: int = 0,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """Notify websocket clients about an ephemeral per-turn model route."""
-        conns = list(self._subs.get(chat_id, ()))
-        if not conns or not model_name.strip():
+        if not model_name.strip():
             return
+        meta = metadata or {}
         body: dict[str, Any] = {
             "event": "turn_model_routed",
             "chat_id": chat_id,
@@ -1258,6 +1260,15 @@ class WebSocketChannel(BaseChannel):
         if cache_penalty is not None:
             body["cache_penalty"] = cache_penalty
         body["estimated_reusable_tokens"] = max(0, estimated_reusable_tokens)
+        self._transcripts.prepare_and_append(
+            chat_id,
+            body,
+            metadata=meta,
+            phase="answer",
+        )
         raw = json.dumps(body, ensure_ascii=False)
+        conns = list(self._subs.get(chat_id, ()))
+        if not conns:
+            return
         for connection in conns:
             await self._safe_send_to(connection, raw, label=" turn_model_routed ")

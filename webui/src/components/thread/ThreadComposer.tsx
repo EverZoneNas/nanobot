@@ -75,7 +75,6 @@ import type {
   OutboundMcpPresetMention,
   SlashCommand,
   SkillSummary,
-  TurnRoutingInfo,
   WorkspaceScopePayload,
   WorkspacesPayload,
 } from "@/lib/types";
@@ -213,8 +212,6 @@ interface ThreadComposerProps {
   runStartedAt?: number | null;
   /** Sustained objective for this chat (WebSocket ``goal_state``). */
   goalState?: GoalStateWsPayload;
-  /** Latest per-turn routing metadata for dev/debug display. */
-  turnRoutingInfo?: TurnRoutingInfo | null;
   workspaceScope?: WorkspaceScopePayload | null;
   workspaceDefaultScope?: WorkspaceScopePayload | null;
   workspaceControls?: WorkspacesPayload["controls"] | null;
@@ -813,45 +810,6 @@ function RunElapsedStrip({
   );
 }
 
-function TurnRoutingDevStrip({
-  info,
-}: {
-  info?: TurnRoutingInfo | null;
-}) {
-  if (!import.meta.env.DEV || !info) return null;
-  const routeParts = [
-    info.modelPreset ? `preset ${info.modelPreset}` : null,
-    `model ${info.modelName}`,
-  ].filter(Boolean);
-  const classifierParts = [
-    info.taskKind ? `kind ${info.taskKind}` : null,
-    info.taskType ? `type ${info.taskType}` : null,
-    info.complexity ? `complexity ${info.complexity}` : null,
-  ].filter(Boolean);
-  return (
-    <div
-      className={cn(
-        "composer-status-strip mx-3 mt-3 overflow-hidden rounded-[16px] border px-3 py-2",
-        "border-sky-500/18 bg-sky-500/[0.05] text-[11.5px] text-sky-950/85",
-        "dark:border-sky-400/20 dark:bg-sky-400/[0.08] dark:text-sky-100/90",
-      )}
-    >
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 leading-5">
-        <span className="font-semibold uppercase tracking-[0.08em] text-sky-700/80 dark:text-sky-200/80">
-          Dev route
-        </span>
-        <span>{routeParts.join(" · ")}</span>
-        {classifierParts.length > 0 ? (
-          <>
-            <span className="text-sky-800/35 dark:text-sky-200/35" aria-hidden>·</span>
-            <span>{classifierParts.join(" · ")}</span>
-          </>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
 export function ThreadComposer({
   onSend,
   disabled,
@@ -872,7 +830,6 @@ export function ThreadComposer({
   onTranscribeAudio,
   runStartedAt = null,
   goalState,
-  turnRoutingInfo = null,
   workspaceScope = null,
   workspaceDefaultScope = null,
   workspaceControls = null,
@@ -1864,7 +1821,6 @@ export function ThreadComposer({
           </div>
         ) : null}
         <RunElapsedStrip startedAt={runStartedAt} goalState={goalState} />
-        <TurnRoutingDevStrip info={turnRoutingInfo} />
         <div className="relative">
           {hasMentionDecorations ? (
             <ComposerCliMentionOverlay

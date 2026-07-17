@@ -44,7 +44,7 @@
           { "match": { "taskKind": "sustained_goal" }, "preset": "local-deep" },
           { "match": { "taskKind": "cron" }, "preset": "local-fast" },
           { "match": { "taskKind": "dream" }, "preset": "local-fast" },
-          { "match": { "taskType": "coding", "complexity": "high" }, "preset": "local-deep" },
+          { "match": { "taskType": "coding", "complexity": "medium" }, "preset": "local-deep" },
           { "match": { "taskType": "research", "complexity": "high" }, "preset": "local-deep" },
           { "match": { "complexity": "low" }, "preset": "local-fast" }
         ]

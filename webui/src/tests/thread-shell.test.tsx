@@ -313,16 +313,9 @@ describe("ThreadShell", () => {
     expect(onGoHome).not.toHaveBeenCalled();
   });
 
-  it("shows persistent dev routing info in the composer", async () => {
+  it("shows persistent routing info under the assistant reply", async () => {
     const client = makeClient();
-    client._emitTurnRouting("chat-route", {
-      modelName: "claude-opus-4-5",
-      modelPreset: "deep",
-      taskKind: "chat",
-      taskType: "coding",
-      complexity: "high",
-      ephemeral: true,
-    });
+    const turnId = "turn-route-1";
 
     render(
       wrap(
@@ -336,12 +329,33 @@ describe("ThreadShell", () => {
       ),
     );
 
-    await waitFor(() => expect(screen.getByText("Dev route")).toBeInTheDocument());
+    await act(async () => {
+      client._emitTurnRouting("chat-route", {
+        turnId,
+        modelName: "claude-opus-4-5",
+        modelPreset: "deep",
+        taskKind: "chat",
+        taskType: "coding",
+        complexity: "high",
+        ephemeral: true,
+      });
+      client._emitChat("chat-route", {
+        event: "delta",
+        chat_id: "chat-route",
+        text: "Routed answer",
+        turn_id: turnId,
+        turn_phase: "answer",
+        turn_seq: 2,
+      });
+    });
+
+    await waitFor(() => expect(screen.getByText("Model route")).toBeInTheDocument());
     expect(screen.getByText(/preset deep/i)).toBeInTheDocument();
     expect(screen.getByText(/model claude-opus-4-5/i)).toBeInTheDocument();
     expect(screen.getByText(/kind chat/i)).toBeInTheDocument();
     expect(screen.getByText(/type coding/i)).toBeInTheDocument();
     expect(screen.getByText(/complexity high/i)).toBeInTheDocument();
+    expect(screen.getByText("Routed answer")).toBeInTheDocument();
   });
 
   it("updates the composer model logo when settings snapshot changes", async () => {

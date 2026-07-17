@@ -2360,6 +2360,22 @@ function AppearanceSettings({
             />
           </SettingsRow>
           <SettingsRow
+            title={tx("settings.rows.showModelRouting", "Model route details")}
+            description={tx(
+              "settings.help.showModelRouting",
+              "Show the smart routing strip under each assistant reply.",
+            )}
+          >
+            <ToggleButton
+              checked={localPrefs.showModelRouting}
+              onChange={(showModelRouting) =>
+                onChangeLocalPrefs((prev) => ({ ...prev, showModelRouting }))
+              }
+              ariaLabel={tx("settings.rows.showModelRouting", "Model route details")}
+              label={localPrefs.showModelRouting ? tx("settings.values.on", "On") : tx("settings.values.off", "Off")}
+            />
+          </SettingsRow>
+          <SettingsRow
             title={tx("settings.rows.brandLogos", "Brand logos")}
             description={tx("settings.help.brandLogos", "Show third-party provider and CLI logos in Settings.")}
           >
