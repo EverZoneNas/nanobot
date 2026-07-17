@@ -992,6 +992,33 @@ describe("SettingsView Apps catalog", () => {
     expect(await screen.findByText("Add configuration")).toBeInTheDocument();
   });
 
+  it("shows smart model routing on the overview instead of a fixed model", async () => {
+    const payload: SettingsPayload = {
+      ...settingsPayload(),
+      smart_model_routing: { enabled: true },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/settings") return jsonResponse(payload);
+        if (url === "/api/settings/cli-apps") {
+          return jsonResponse({ apps: [], installed_count: 0 });
+        }
+        if (url === "/api/settings/mcp-presets") {
+          return jsonResponse({ presets: [], installed_count: 0 });
+        }
+        return { ok: false, status: 404, json: async () => ({}) } as Response;
+      }),
+    );
+
+    renderSettingsView({ initialSection: "overview" });
+
+    expect(await screen.findByText("Smart model routing")).toBeInTheDocument();
+    expect(screen.queryByText("openai/gpt-4o")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("overview-logo-openai")).not.toBeInTheDocument();
+  });
+
   it("disables the model preset picker when smart model routing is enabled", async () => {
     vi.stubGlobal(
       "fetch",

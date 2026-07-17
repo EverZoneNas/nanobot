@@ -1988,18 +1988,26 @@ function OverviewSettings({
 }) {
   const { t } = useTranslation();
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
+  const smartRoutingEnabled = settings.smart_model_routing?.enabled ?? false;
   const activePreset = settings.agent.model_preset || "default";
   const activeProvider = settings.agent.resolved_provider ?? settings.agent.provider;
   const activeProviderConfigured = settingsProviderConfigured(settings, activeProvider);
   const activeProviderLabel = providerDisplayLabel(settings.providers, activeProvider);
-  const activeModelValue = activeProviderConfigured
-    ? settings.agent.model
-    : tx("settings.values.notConfigured", "Not configured");
-  const activeModelCaption = activeProviderConfigured
-    ? `${activeProvider} · ${activePreset}`
-    : activeProviderLabel || settings.agent.model
-      ? [activeProviderLabel, settings.agent.model].filter(Boolean).join(" · ")
-      : tx("settings.byok.noConfiguredProviders", "No configured providers");
+  const activeModelValue = smartRoutingEnabled
+    ? tx("settings.rows.smartModelRouting", "Smart model routing")
+    : activeProviderConfigured
+      ? settings.agent.model
+      : tx("settings.values.notConfigured", "Not configured");
+  const activeModelCaption = smartRoutingEnabled
+    ? tx(
+        "settings.help.smartModelRouting",
+        "Automatically uses faster or stronger models per turn based on the task.",
+      )
+    : activeProviderConfigured
+      ? `${activeProvider} · ${activePreset}`
+      : activeProviderLabel || settings.agent.model
+        ? [activeProviderLabel, settings.agent.model].filter(Boolean).join(" · ")
+        : tx("settings.byok.noConfiguredProviders", "No configured providers");
   const webStatus = settings.web.enable
     ? tx("settings.values.enabled", "Enabled")
     : tx("settings.values.disabled", "Disabled");
@@ -2066,7 +2074,7 @@ function OverviewSettings({
         <SettingsGroup>
           <OverviewListRow
             icon={Bot}
-            valueLogoProvider={activeProvider}
+            valueLogoProvider={smartRoutingEnabled ? null : activeProvider}
             title={tx("settings.overview.model", "Current model")}
             value={activeModelValue}
             caption={activeModelCaption}
