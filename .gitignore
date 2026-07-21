@@ -105,5 +105,6 @@ bridge/node_modules/
 
 # Gateway / WebUI runtime (when config lives in repo root)
 run/
+cli-apps/
 webui/token-usage.json
 webui/websocket_*.jsonl
