@@ -14,7 +14,7 @@
         "local-deep"
       ],
       "maxToolIterations": 200,
-      "maxConcurrentSubagents": 1,
+      "maxConcurrentSubagents": 3,
       "failOnToolError": true,
       "maxToolResultChars": 16000,
       "providerRetryMode": "standard",
