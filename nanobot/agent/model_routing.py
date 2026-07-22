@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -20,6 +20,7 @@ from nanobot.config.schema import (
     RunKind,
     TaskComplexity,
     TaskType,
+    TaskTypeDefinition,
 )
 from nanobot.providers.factory import (
     ProviderSnapshot,
@@ -39,16 +40,21 @@ _COMPLEXITY_BENEFIT: dict[TaskComplexity, float] = {
     "high": 1.0,
 }
 
-_CLASSIFIER_SYSTEM = """You classify user requests for model routing.
+def _build_classifier_system(
+    task_types: Mapping[str, TaskTypeDefinition],
+) -> str:
+    """Build the classifier contract from the active task-type registry."""
+    type_names = "|".join(task_types)
+    type_guidelines = "\n".join(
+        f"- {name}: {definition.description}" for name, definition in task_types.items()
+    )
+    return f"""You classify user requests for model routing.
+Choose the single best matching active task type.
 Output JSON only with this shape:
-{"task_type":"coding|research|admin|chat|other","complexity":"low|medium|high","confidence":0.0,"reason":"brief"}
+{{"task_type":"{type_names}","complexity":"low|medium|high","confidence":0.0,"reason":"brief"}}
 
 Guidelines:
-- coding: implementation, debugging, refactors, shell automation, multi-file changes
-- research: exploration, comparisons, reading docs or URLs, analysis
-- admin: scheduling, configuration, reminders, lightweight operational tasks
-- chat: simple Q&A, greetings, short explanations
-- other: anything that does not fit above
+{type_guidelines}
 - low: quick, single-step, or conversational
 - medium: moderate scope, a few steps or files
 - high: large, ambiguous, or multi-step work
@@ -274,6 +280,7 @@ def _truncate_user_text(text: str) -> str:
 
 def _parse_classifier_response(
     content: str | None,
+    valid_task_types: Collection[str],
 ) -> tuple[TaskType | None, TaskComplexity | None, float | None]:
     if not content:
         return None, None, None
@@ -297,9 +304,8 @@ def _parse_classifier_response(
 
     task_type = parsed.get("task_type")
     complexity = parsed.get("complexity")
-    valid_types = {"coding", "research", "admin", "chat", "other"}
     valid_complexity = {"low", "medium", "high"}
-    resolved_type = task_type if task_type in valid_types else None
+    resolved_type = task_type if task_type in valid_task_types else None
     resolved_complexity = complexity if complexity in valid_complexity else None
     if resolved_type is None or resolved_complexity is None:
         return resolved_type, resolved_complexity, None
@@ -353,7 +359,11 @@ class ModelRouter:
         )
 
     def _refresh_classifier_snapshot(self) -> ProviderSnapshot:
-        signature = ("classifier", self._routing.classifier_preset)
+        definitions_signature = tuple(
+            (name, definition.description)
+            for name, definition in self._routing.task_type_definitions.items()
+        )
+        signature = ("classifier", self._routing.classifier_preset, definitions_signature)
         if self._classifier_snapshot is not None and self._classifier_signature == signature:
             return self._classifier_snapshot
         snapshot = self._load_preset(self._routing.classifier_preset)
@@ -438,6 +448,7 @@ class ModelRouter:
         self,
         user_text: str,
     ) -> tuple[TaskType | None, TaskComplexity | None, float | None]:
+        task_types = self._routing.task_type_definitions
         snapshot = self._refresh_classifier_snapshot()
         provider = snapshot.provider
         preset = self._resolve_preset(self._routing.classifier_preset)
@@ -445,7 +456,10 @@ class ModelRouter:
             response = await provider.chat_with_retry(
                 model=snapshot.model,
                 messages=[
-                    {"role": "system", "content": _CLASSIFIER_SYSTEM},
+                    {
+                        "role": "system",
+                        "content": _build_classifier_system(task_types),
+                    },
                     {"role": "user", "content": _truncate_user_text(user_text)},
                 ],
                 tools=None,
@@ -462,7 +476,10 @@ class ModelRouter:
                 (response.content or "")[:200],
             )
             return None, None, None
-        task_type, complexity, confidence = _parse_classifier_response(response.content)
+        task_type, complexity, confidence = _parse_classifier_response(
+            response.content,
+            task_types,
+        )
         logger.debug(
             "Model routing classifier: task_type={} complexity={} confidence={} model={}",
             task_type,

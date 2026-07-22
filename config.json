@@ -39,12 +39,18 @@
         "enabled": true,
         "classifierPreset": "local-swift",
         "defaultPreset": "local-fast",
+        "extendedTaskTypes": {
+          "legal_review": {
+            "description": "contract, policy, and regulatory analysis"
+          }
+        },
         "rules": [
           { "match": { "runKind": "subagent" }, "preset": "local-deep" },
           { "match": { "runKind": "sustained_goal" }, "preset": "local-deep" },
           { "match": { "runKind": "cron" }, "preset": "local-fast" },
           { "match": { "runKind": "local_trigger" }, "preset": "local-fast" },
           { "match": { "runKind": "dream" }, "preset": "local-fast" },
+          { "match": { "taskType": "legal_review" }, "preset": "local-deep" },
           { "match": { "taskType": "coding", "complexity": "medium" }, "preset": "local-deep" },
           { "match": { "taskType": "research", "complexity": "high" }, "preset": "local-deep" },
           { "match": { "complexity": "low" }, "preset": "local-fast" }

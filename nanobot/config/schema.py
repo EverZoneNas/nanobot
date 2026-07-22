@@ -1,6 +1,7 @@
 """Configuration schema using Pydantic."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -124,9 +125,38 @@ RunKind = Literal[
     "sustained_goal",
     "chat",
 ]
-# Deprecated compatibility alias. New code should use RunKind.
-TaskKind = RunKind
-TaskType = Literal["coding", "research", "admin", "chat", "other"]
+
+
+class TaskTypeDefinition(Base):
+    """Classifier-facing definition of a model-routing task type."""
+
+    description: str
+
+    @field_validator("description")
+    @classmethod
+    def _validate_description(cls, value: str) -> str:
+        description = value.strip()
+        if not description:
+            raise ValueError("task type description must not be empty")
+        return description
+
+
+BUILTIN_TASK_TYPE_DEFINITIONS: dict[str, TaskTypeDefinition] = {
+    "chat": TaskTypeDefinition(description="simple Q&A, greetings, short explanations"),
+    "admin": TaskTypeDefinition(
+        description="scheduling, configuration, reminders, lightweight operational tasks"
+    ),
+    "coding": TaskTypeDefinition(
+        description="implementation, debugging, refactors, shell automation, multi-file changes"
+    ),
+    "research": TaskTypeDefinition(
+        description="exploration, comparisons, reading docs or URLs, analysis"
+    ),
+}
+_TASK_TYPE_IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z][a-z0-9]*)*$")
+BuiltinTaskType = Literal["chat", "admin", "coding", "research"]
+# Configured extensions make the active task-type set dynamic at runtime.
+TaskType = str
 TaskComplexity = Literal["low", "medium", "high"]
 
 
@@ -167,6 +197,11 @@ class ModelRoutingConfig(Base):
         validation_alias=AliasChoices("classifierPreset", "classifier_preset"),
         serialization_alias="classifierPreset",
     )
+    extended_task_types: dict[str, TaskTypeDefinition] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("extendedTaskTypes", "extended_task_types"),
+        serialization_alias="extendedTaskTypes",
+    )
     rules: list[ModelRouteRule] = Field(default_factory=list)
     default_preset: str | None = Field(
         default=None,
@@ -199,6 +234,40 @@ class ModelRoutingConfig(Base):
         validation_alias=AliasChoices("warmPrefixTokens", "warm_prefix_tokens"),
         serialization_alias="warmPrefixTokens",
     )
+
+    @field_validator("extended_task_types")
+    @classmethod
+    def _validate_extended_task_types(
+        cls,
+        definitions: dict[str, TaskTypeDefinition],
+    ) -> dict[str, TaskTypeDefinition]:
+        for name in definitions:
+            if name == "other":
+                raise ValueError("extended task type 'other' is reserved and no longer supported")
+            if name in BUILTIN_TASK_TYPE_DEFINITIONS:
+                raise ValueError(f"extended task type {name!r} conflicts with a built-in task type")
+            if not _TASK_TYPE_IDENTIFIER_RE.fullmatch(name):
+                raise ValueError(
+                    f"extended task type {name!r} must be a lowercase snake_case identifier"
+                )
+        return definitions
+
+    @property
+    def task_type_definitions(self) -> dict[str, TaskTypeDefinition]:
+        """Return built-in and configured task types in classifier prompt order."""
+        return {**BUILTIN_TASK_TYPE_DEFINITIONS, **self.extended_task_types}
+
+    @model_validator(mode="after")
+    def _validate_rule_task_types(self) -> "ModelRoutingConfig":
+        active_types = self.task_type_definitions
+        for idx, rule in enumerate(self.rules):
+            task_type = rule.match.task_type
+            if task_type is not None and task_type not in active_types:
+                raise ValueError(
+                    f"rules[{idx}].match.task_type {task_type!r} is not a built-in "
+                    "or configured extended task type"
+                )
+        return self
 
 
 class AgentDefaults(Base):

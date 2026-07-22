@@ -1419,12 +1419,18 @@ When enabled, nanobot:
         "cacheWeight": 0.65,
         "switchThreshold": 0.15,
         "warmPrefixTokens": 16000,
+        "extendedTaskTypes": {
+          "legal_review": {
+            "description": "contract, policy, and regulatory analysis"
+          }
+        },
         "rules": [
           { "match": { "runKind": "subagent", "taskType": "coding", "complexity": "high" }, "preset": "deep" },
           { "match": { "runKind": "sustained_goal", "complexity": "high" }, "preset": "deep" },
           { "match": { "runKind": "cron" }, "preset": "fast" },
           { "match": { "runKind": "local_trigger" }, "preset": "fast" },
           { "match": { "runKind": "dream" }, "preset": "fast" },
+          { "match": { "taskType": "legal_review" }, "preset": "deep" },
           { "match": { "taskType": "coding", "complexity": "high" }, "preset": "deep" },
           { "match": { "complexity": "low" }, "preset": "fast" }
         ]
@@ -1441,6 +1447,7 @@ When enabled, nanobot:
 |-------|-------------|
 | `enabled` | Turn routing on or off. Default `false`. |
 | `classifierPreset` | Preset used for lightweight semantic classification when an eligible rule requires it. Must exist in `modelPresets` when routing is enabled. |
+| `extendedTaskTypes` | Optional mapping of custom machine identifiers to classifier definitions. Each value requires a non-empty `description`. |
 | `rules` | Ordered list of match rules. First match wins; put more specific rules first. |
 | `defaultPreset` | Optional fallback preset when the classifier fails or no rule matches. |
 | `affinityTtlSeconds` | Seconds of inactivity before the current chat route and cache observations expire. Default `300`. |
@@ -1453,8 +1460,26 @@ Rule `match` fields (all optional except that at least one should be set per rul
 | Match field | Values |
 |-------------|--------|
 | `runKind` | `subagent`, `cron`, `local_trigger`, `dream`, `sustained_goal`, `chat` |
-| `taskType` | `coding`, `research`, `admin`, `chat`, `other` (from the classifier when required) |
+| `taskType` | Built-ins `chat`, `admin`, `coding`, `research`, or a key from `extendedTaskTypes` (from the classifier when required) |
 | `complexity` | `low`, `medium`, `high` (from the classifier when required) |
+
+`extendedTaskTypes` augments rather than replaces the built-ins. Its JSON shape is a mapping so rules can refer directly to stable identifiers:
+
+```json
+{
+  "extendedTaskTypes": {
+    "legal_review": {
+      "description": "contract, policy, and regulatory analysis"
+    }
+  }
+}
+```
+
+Custom names must be lowercase snake_case machine identifiers, with letter-led segments (for example, `legal_review` or `tier2_support`). Names that collide with a built-in are rejected, and the removed legacy name `other` is reserved. Descriptions are trimmed and must contain non-whitespace text. Every rule `taskType` is validated against the merged built-in and extended set even when routing is disabled, so misspelled or removed extensions fail configuration loading instead of silently becoming unreachable. When routing is enabled, the existing preset validation also applies to the classifier, default, and rule presets.
+
+The classifier prompt is generated in the canonical built-in order `chat`, `admin`, `coding`, `research`, followed by extended types in their JSON configuration order. Classifier output is accepted only when its `task_type` is one of those active keys, and the classifier must choose the best matching active type; there is no catch-all task type. Classification failures retain the existing internal `None` result and follow the normal routing fallback. Changing a custom definition changes the classifier signature used by the router, so the classifier snapshot and prompt contract are refreshed.
+
+> **Migration:** `other` is no longer a built-in task type. Existing rules with `"taskType": "other"` now fail configuration validation and must be removed or changed to one of the four built-ins or a purpose-specific `extendedTaskTypes` key. They are not silently reinterpreted.
 
 `taskKind` (and snake-case `task_kind`) is a deprecated read-only compatibility alias for `runKind`; new configurations and serialized output use `runKind`. Rules containing only known fields, such as `runKind: cron`, stay on the deterministic fast path and do not invoke the classifier. A semantic rule such as `runKind: subagent` plus `taskType: coding` can invoke classification for a subagent run when its task type is not already known.
 

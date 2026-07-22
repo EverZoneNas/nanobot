@@ -12,6 +12,7 @@ from nanobot.agent.model_routing import (
     RoutingContext,
     RoutingDecision,
     TurnRoute,
+    _build_classifier_system,
     _parse_classifier_response,
     _rule_matches,
     infer_run_kind,
@@ -20,12 +21,14 @@ from nanobot.agent.model_routing import (
 from nanobot.agent.runner import AgentRunner, AgentRunSpec
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.config.schema import (
+    BUILTIN_TASK_TYPE_DEFINITIONS,
     Config,
     DreamConfig,
     ModelPresetConfig,
     ModelRouteMatch,
     ModelRouteRule,
     ModelRoutingConfig,
+    TaskTypeDefinition,
 )
 from nanobot.providers.base import LLMProvider, LLMResponse
 from nanobot.providers.factory import ProviderSnapshot, provider_cache_identity
@@ -207,22 +210,78 @@ def test_rule_matching_precedence() -> None:
 
 def test_parse_classifier_response_accepts_json_and_fenced_json() -> None:
     task_type, complexity, confidence = _parse_classifier_response(
-        '```json\n{"task_type":"research","complexity":"medium","reason":"docs"}\n```'
+        '```json\n{"task_type":"research","complexity":"medium","reason":"docs"}\n```',
+        BUILTIN_TASK_TYPE_DEFINITIONS,
     )
     assert task_type == "research"
     assert complexity == "medium"
     assert confidence == 0.5
-    assert _parse_classifier_response("not json") == (None, None, None)
+    assert _parse_classifier_response("not json", BUILTIN_TASK_TYPE_DEFINITIONS) == (
+        None,
+        None,
+        None,
+    )
+
+
+def test_classifier_prompt_and_parser_use_active_task_types() -> None:
+    task_types = {
+        **BUILTIN_TASK_TYPE_DEFINITIONS,
+        "legal_review": TaskTypeDefinition(description="contract and policy analysis"),
+        "tier2_support": TaskTypeDefinition(description="advanced customer support"),
+    }
+
+    prompt = _build_classifier_system(task_types)
+
+    assert (
+        '"task_type":"chat|admin|coding|research|legal_review|tier2_support"'
+        in prompt
+    )
+    guideline_names = [
+        line.split(":", maxsplit=1)[0].removeprefix("- ")
+        for line in prompt.splitlines()
+        if line.startswith("- ") and ": " in line
+    ]
+    assert guideline_names[: len(task_types)] == [
+        "chat",
+        "admin",
+        "coding",
+        "research",
+        "legal_review",
+        "tier2_support",
+    ]
+    assert "- legal_review: contract and policy analysis" in prompt
+    assert _parse_classifier_response(
+        '{"task_type":"legal_review","complexity":"high","confidence":0.8}',
+        task_types,
+    ) == ("legal_review", "high", 0.8)
+    assert _parse_classifier_response(
+        '{"task_type":"legal_review","complexity":"high","confidence":0.8}',
+        BUILTIN_TASK_TYPE_DEFINITIONS,
+    ) == (None, "high", None)
+    assert _parse_classifier_response(
+        '{"task_type":"other","complexity":"medium","confidence":0.9}',
+        task_types,
+    ) == (None, "medium", None)
 
 
 def test_config_parses_cache_routing_defaults_and_aliases() -> None:
     defaults = ModelRoutingConfig()
+    assert defaults.extended_task_types == {}
+    assert list(defaults.task_type_definitions) == [
+        "chat",
+        "admin",
+        "coding",
+        "research",
+    ]
     assert defaults.affinity_ttl_seconds == 300
     assert defaults.cache_weight == 0.65
     assert defaults.switch_threshold == 0.15
     assert defaults.warm_prefix_tokens == 16_000
 
     routing = ModelRoutingConfig.model_validate({
+        "extendedTaskTypes": {
+            "legal_review": {"description": " contract and policy analysis "},
+        },
         "affinityTtlSeconds": 120,
         "cacheWeight": 0.4,
         "switchThreshold": 0.2,
@@ -232,9 +291,15 @@ def test_config_parses_cache_routing_defaults_and_aliases() -> None:
     assert routing.cache_weight == 0.4
     assert routing.switch_threshold == 0.2
     assert routing.warm_prefix_tokens == 8000
+    assert routing.extended_task_types["legal_review"].description == (
+        "contract and policy analysis"
+    )
     assert routing.model_dump(by_alias=True) == {
         "enabled": False,
         "classifierPreset": "fast",
+        "extendedTaskTypes": {
+            "legal_review": {"description": "contract and policy analysis"},
+        },
         "rules": [],
         "defaultPreset": None,
         "affinityTtlSeconds": 120,
@@ -242,6 +307,90 @@ def test_config_parses_cache_routing_defaults_and_aliases() -> None:
         "switchThreshold": 0.2,
         "warmPrefixTokens": 8000,
     }
+
+
+def test_task_type_definitions_append_extensions_in_configuration_order() -> None:
+    routing = ModelRoutingConfig.model_validate({
+        "extendedTaskTypes": {
+            "tier2_support": {"description": "advanced customer support"},
+            "legal_review": {"description": "contract and policy analysis"},
+        },
+    })
+
+    assert list(routing.task_type_definitions) == [
+        "chat",
+        "admin",
+        "coding",
+        "research",
+        "tier2_support",
+        "legal_review",
+    ]
+
+
+@pytest.mark.parametrize("name", ["LegalReview", "legal-review", "_legal", "legal__review"])
+def test_config_rejects_invalid_extended_task_type_name(name: str) -> None:
+    with pytest.raises(ValueError, match="lowercase snake_case"):
+        ModelRoutingConfig.model_validate({
+            "extendedTaskTypes": {name: {"description": "legal analysis"}},
+        })
+
+
+def test_config_rejects_empty_extended_task_type_description() -> None:
+    with pytest.raises(ValueError, match="description must not be empty"):
+        ModelRoutingConfig.model_validate({
+            "extendedTaskTypes": {"legal_review": {"description": "  "}},
+        })
+
+
+def test_config_rejects_builtin_extended_task_type_collision() -> None:
+    with pytest.raises(ValueError, match="conflicts with a built-in"):
+        ModelRoutingConfig.model_validate({
+            "extendedTaskTypes": {"coding": {"description": "different meaning"}},
+        })
+
+
+def test_config_rejects_other_as_extended_or_rule_task_type() -> None:
+    with pytest.raises(ValueError, match="no longer supported"):
+        ModelRoutingConfig.model_validate({
+            "extendedTaskTypes": {"other": {"description": "legacy catch-all"}},
+        })
+
+    with pytest.raises(ValueError, match="not a built-in or configured extended"):
+        ModelRoutingConfig.model_validate({
+            "rules": [{"match": {"taskType": "other"}, "preset": "fast"}],
+        })
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_config_rejects_unknown_rule_task_type_regardless_of_enabled(enabled: bool) -> None:
+    with pytest.raises(ValueError, match="not a built-in or configured extended"):
+        ModelRoutingConfig.model_validate({
+            "enabled": enabled,
+            "rules": [{"match": {"taskType": "legal_review"}, "preset": "deep"}],
+        })
+
+
+def test_disabled_extended_task_type_config_does_not_require_presets() -> None:
+    config = Config.model_validate({
+        "agents": {
+            "defaults": {
+                "smartModelRouting": {
+                    "enabled": False,
+                    "classifierPreset": "missing",
+                    "extendedTaskTypes": {
+                        "legal_review": {"description": "contract and policy analysis"},
+                    },
+                    "rules": [
+                        {"match": {"taskType": "legal_review"}, "preset": "also-missing"},
+                    ],
+                }
+            }
+        },
+    })
+
+    assert "legal_review" in (
+        config.agents.defaults.smart_model_routing.task_type_definitions
+    )
 
 
 @pytest.mark.parametrize(
@@ -357,6 +506,77 @@ async def test_resolve_turn_route_uses_classifier_for_chat() -> None:
     assert route.task_type == "coding"
     assert route.complexity == "high"
     assert decision.reason == "initial_candidate"
+
+
+@pytest.mark.asyncio
+async def test_extended_task_type_classifies_and_routes_custom_rule() -> None:
+    routing = ModelRoutingConfig(
+        enabled=True,
+        classifier_preset="fast",
+        extended_task_types={
+            "legal_review": TaskTypeDefinition(
+                description="contract and policy analysis"
+            ),
+        },
+        rules=[
+            ModelRouteRule(
+                match=ModelRouteMatch(task_type="legal_review"),
+                preset="deep",
+            ),
+        ],
+    )
+    router = _router(
+        routing=routing,
+        classifier_response=(
+            '{"task_type":"legal_review","complexity":"high",'
+            '"confidence":0.9,"reason":"contract"}'
+        ),
+    )
+    classifier_provider = router._refresh_classifier_snapshot().provider
+
+    decision = await router.resolve_turn_route(
+        RoutingContext(
+            user_text="Review this contract",
+            run_kind="chat",
+            session_metadata={},
+        ),
+        baseline_snapshot=_snapshot("fast-model"),
+        baseline_preset="fast",
+    )
+
+    assert decision.selected.preset_name == "deep"
+    assert decision.selected.task_type == "legal_review"
+    system_prompt = classifier_provider.chat_with_retry.await_args.kwargs["messages"][0][
+        "content"
+    ]
+    assert "- legal_review: contract and policy analysis" in system_prompt
+
+
+def test_classifier_snapshot_signature_changes_with_task_definitions() -> None:
+    routing = ModelRoutingConfig(
+        classifier_preset="fast",
+        extended_task_types={
+            "legal_review": TaskTypeDefinition(description="contract review"),
+        },
+    )
+    router = _router(routing=routing)
+
+    first = router._refresh_classifier_snapshot()
+    routing.extended_task_types["legal_review"].description = "contract and policy review"
+    second = router._refresh_classifier_snapshot()
+
+    assert second is not first
+    assert router._classifier_signature == (
+        "classifier",
+        "fast",
+        (
+            ("chat", BUILTIN_TASK_TYPE_DEFINITIONS["chat"].description),
+            ("admin", BUILTIN_TASK_TYPE_DEFINITIONS["admin"].description),
+            ("coding", BUILTIN_TASK_TYPE_DEFINITIONS["coding"].description),
+            ("research", BUILTIN_TASK_TYPE_DEFINITIONS["research"].description),
+            ("legal_review", "contract and policy review"),
+        ),
+    )
 
 
 @pytest.mark.parametrize(
