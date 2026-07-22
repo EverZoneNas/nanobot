@@ -18,7 +18,6 @@ from nanobot.bus.outbound_events import (
     RuntimeModelUpdatedEvent,
     SessionUpdatedEvent,
     TurnEndEvent,
-    TurnModelRoutedEvent,
     outbound_message_for_event,
 )
 from nanobot.bus.queue import MessageBus
@@ -29,7 +28,6 @@ from nanobot.bus.runtime_events import (
     RuntimeModelChanged,
     SessionTurnStarted,
     TurnCompleted,
-    TurnModelRouted,
     TurnRunStatusChanged,
 )
 from nanobot.providers.base import LLMProvider
@@ -267,10 +265,6 @@ class WebuiTurnCoordinator:
                 self._handle_runtime_model_changed,
                 RuntimeModelChanged,
             ),
-            runtime_events.subscribe(
-                self._handle_turn_model_routed,
-                TurnModelRouted,
-            ),
         ]
 
         def _unsubscribe() -> None:
@@ -347,35 +341,6 @@ class WebuiTurnCoordinator:
                     model=event.model,
                     model_preset=event.model_preset,
                 ),
-            )
-        )
-
-    async def _handle_turn_model_routed(self, event: TurnModelRouted) -> None:
-        if not self._is_websocket_event(event.context):
-            return
-        cid = str(event.context.chat_id or "").strip()
-        if not cid:
-            return
-        await self.bus.publish_outbound(
-            outbound_message_for_event(
-                channel=event.context.channel,
-                chat_id=cid,
-                event=TurnModelRoutedEvent(
-                    model=event.model,
-                    model_preset=event.model_preset,
-                    task_kind=event.task_kind,
-                    task_type=event.task_type,
-                    complexity=event.complexity,
-                    candidate_model=event.candidate_model,
-                    candidate_model_preset=event.candidate_model_preset,
-                    decision_reason=event.decision_reason,
-                    switch_score=event.switch_score,
-                    quality_benefit=event.quality_benefit,
-                    cache_penalty=event.cache_penalty,
-                    estimated_reusable_tokens=event.estimated_reusable_tokens,
-                    ephemeral=event.ephemeral,
-                ),
-                metadata=event.context.metadata,
             )
         )
 

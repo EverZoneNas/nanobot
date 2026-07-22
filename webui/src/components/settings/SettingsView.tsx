@@ -177,7 +177,6 @@ interface AgentSettingsDraft {
   provider: string;
   modelPreset: string;
   presetLabel: string;
-  smartModelRoutingEnabled: boolean;
   contextWindowTokens: number;
   timezone: string;
   botName: string;
@@ -356,7 +355,6 @@ const DEFAULT_AGENT_SETTINGS_DRAFT: AgentSettingsDraft = {
   provider: "",
   modelPreset: "default",
   presetLabel: "Default",
-  smartModelRoutingEnabled: false,
   contextWindowTokens: 200_000,
   timezone: "UTC",
   botName: "nanobot",
@@ -419,7 +417,6 @@ function agentDraftFromPayload(payload: SettingsPayload): AgentSettingsDraft {
       : activePreset?.provider ?? editableDefaultProvider(payload),
     modelPreset: activePresetName,
     presetLabel: activePreset?.label ?? activePresetName,
-    smartModelRoutingEnabled: payload.smart_model_routing?.enabled ?? false,
     contextWindowTokens: normalizeContextWindowTokens(
       activePreset?.context_window_tokens ?? payload.agent.context_window_tokens,
     ),
@@ -842,11 +839,10 @@ export function SettingsView({
       ? editableDefaultProvider(settings)
       : selectedPreset.provider;
     return (
-      (!form.smartModelRoutingEnabled && form.modelPreset !== activePresetName) ||
+      form.modelPreset !== activePresetName ||
       form.model !== selectedPreset.model ||
       form.provider !== selectedProvider ||
       form.contextWindowTokens !== normalizeContextWindowTokens(selectedPreset.context_window_tokens) ||
-      form.smartModelRoutingEnabled !== (settings.smart_model_routing?.enabled ?? false) ||
       (!selectedPreset.is_default && form.presetLabel.trim() !== selectedPreset.label)
     );
   }, [form, settings]);
@@ -971,11 +967,6 @@ export function SettingsView({
     setSaving(true);
     try {
       const selectedPreset = settings.model_presets.find((preset) => preset.name === form.modelPreset);
-      const routingChanged =
-        form.smartModelRoutingEnabled !== (settings.smart_model_routing?.enabled ?? false);
-      const routingUpdate = routingChanged
-        ? { smartModelRoutingEnabled: form.smartModelRoutingEnabled }
-        : {};
       let payload: SettingsPayload;
       if (selectedPreset && !selectedPreset.is_default) {
         payload = await updateModelConfiguration(token, {
@@ -987,9 +978,6 @@ export function SettingsView({
             ? { contextWindowTokens: form.contextWindowTokens }
             : {}),
         });
-        if (routingUpdate.smartModelRoutingEnabled !== undefined) {
-          payload = await updateSettings(token, routingUpdate);
-        }
       } else {
         const defaultModel = defaultPreset(settings)?.model ?? settings.agent.model;
         const defaultProvider = editableDefaultProvider(settings);
@@ -997,8 +985,7 @@ export function SettingsView({
           defaultPreset(settings)?.context_window_tokens ?? settings.agent.context_window_tokens,
         );
         payload = await updateSettings(token, {
-          ...routingUpdate,
-          modelPreset: form.smartModelRoutingEnabled ? undefined : form.modelPreset,
+          modelPreset: form.modelPreset,
           ...(form.model !== defaultModel ? { model: form.model } : {}),
           ...(form.provider !== defaultProvider ? { provider: form.provider } : {}),
           ...(form.contextWindowTokens !== defaultContextWindowTokens
@@ -1988,26 +1975,18 @@ function OverviewSettings({
 }) {
   const { t } = useTranslation();
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
-  const smartRoutingEnabled = settings.smart_model_routing?.enabled ?? false;
   const activePreset = settings.agent.model_preset || "default";
   const activeProvider = settings.agent.resolved_provider ?? settings.agent.provider;
   const activeProviderConfigured = settingsProviderConfigured(settings, activeProvider);
   const activeProviderLabel = providerDisplayLabel(settings.providers, activeProvider);
-  const activeModelValue = smartRoutingEnabled
-    ? tx("settings.rows.smartModelRouting", "Smart model routing")
-    : activeProviderConfigured
-      ? settings.agent.model
-      : tx("settings.values.notConfigured", "Not configured");
-  const activeModelCaption = smartRoutingEnabled
-    ? tx(
-        "settings.help.smartModelRouting",
-        "Automatically uses faster or stronger models per turn based on the task.",
-      )
-    : activeProviderConfigured
-      ? `${activeProvider} · ${activePreset}`
-      : activeProviderLabel || settings.agent.model
-        ? [activeProviderLabel, settings.agent.model].filter(Boolean).join(" · ")
-        : tx("settings.byok.noConfiguredProviders", "No configured providers");
+  const activeModelValue = activeProviderConfigured
+    ? settings.agent.model
+    : tx("settings.values.notConfigured", "Not configured");
+  const activeModelCaption = activeProviderConfigured
+    ? `${activeProvider} · ${activePreset}`
+    : activeProviderLabel || settings.agent.model
+      ? [activeProviderLabel, settings.agent.model].filter(Boolean).join(" · ")
+      : tx("settings.byok.noConfiguredProviders", "No configured providers");
   const webStatus = settings.web.enable
     ? tx("settings.values.enabled", "Enabled")
     : tx("settings.values.disabled", "Disabled");
@@ -2074,7 +2053,7 @@ function OverviewSettings({
         <SettingsGroup>
           <OverviewListRow
             icon={Bot}
-            valueLogoProvider={smartRoutingEnabled ? null : activeProvider}
+            valueLogoProvider={activeProvider}
             title={tx("settings.overview.model", "Current model")}
             value={activeModelValue}
             caption={activeModelCaption}
@@ -2360,22 +2339,6 @@ function AppearanceSettings({
             />
           </SettingsRow>
           <SettingsRow
-            title={tx("settings.rows.showModelRouting", "Model route details")}
-            description={tx(
-              "settings.help.showModelRouting",
-              "Show the smart routing strip under each assistant reply.",
-            )}
-          >
-            <ToggleButton
-              checked={localPrefs.showModelRouting}
-              onChange={(showModelRouting) =>
-                onChangeLocalPrefs((prev) => ({ ...prev, showModelRouting }))
-              }
-              ariaLabel={tx("settings.rows.showModelRouting", "Model route details")}
-              label={localPrefs.showModelRouting ? tx("settings.values.on", "On") : tx("settings.values.off", "Off")}
-            />
-          </SettingsRow>
-          <SettingsRow
             title={tx("settings.rows.brandLogos", "Brand logos")}
             description={tx("settings.help.brandLogos", "Show third-party provider and CLI logos in Settings.")}
           >
@@ -2555,35 +2518,13 @@ function ModelsSettings({
     !form.model.trim() ||
     !form.provider.trim() ||
     Boolean(selectedPreset && !selectedPreset.is_default && !form.presetLabel.trim());
-  const presetPickerDisabled = form.smartModelRoutingEnabled;
   return (
     <div className="space-y-7">
       <section>
         <SettingsGroup>
           <SettingsRow
-            title={tx("settings.rows.smartModelRouting", "Smart model routing")}
-            description={tx(
-              "settings.help.smartModelRouting",
-              "Pick a model per turn from routing rules. While enabled, the active preset cannot be changed here.",
-            )}
-          >
-            <ToggleButton
-              checked={form.smartModelRoutingEnabled}
-              onChange={(enabled) => setForm((prev) => ({ ...prev, smartModelRoutingEnabled: enabled }))}
-              ariaLabel={tx("settings.rows.smartModelRouting", "Smart model routing")}
-              label={form.smartModelRoutingEnabled ? tx("settings.values.on", "On") : tx("settings.values.off", "Off")}
-            />
-          </SettingsRow>
-          <SettingsRow
             title={tx("settings.rows.currentModel", "Current configuration")}
-            description={
-              presetPickerDisabled
-                ? tx(
-                    "settings.help.currentModelRoutingLocked",
-                    "Routing chooses the model per turn. Disable smart model routing to switch presets.",
-                  )
-                : tx("settings.help.currentModel", "Used for new replies.")
-            }
+            description={tx("settings.help.currentModel", "Used for new replies.")}
           >
             <ModelPresetPicker
               presets={settings.model_presets}
@@ -2593,7 +2534,6 @@ function ModelsSettings({
               draftProvider={form.provider}
               providerConfigured={selectedProviderConfigured}
               showProviderLogos={showBrandLogos}
-              disabled={presetPickerDisabled}
               onChange={(modelPreset) => {
                 const nextPreset = settings.model_presets.find((preset) => preset.name === modelPreset);
                 setForm((prev) => ({
@@ -7583,7 +7523,6 @@ function ModelPresetPicker({
   draftProvider,
   providerConfigured,
   showProviderLogos,
-  disabled = false,
   onChange,
   onCreateConfiguration,
 }: {
@@ -7594,27 +7533,24 @@ function ModelPresetPicker({
   draftProvider: string;
   providerConfigured: boolean;
   showProviderLogos: boolean;
-  disabled?: boolean;
   onChange: (preset: string) => void;
   onCreateConfiguration: () => void;
 }) {
   const { t } = useTranslation();
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
   const selectedPreset = presets.find((preset) => preset.name === value) ?? presets[0] ?? null;
-  const pickerDisabled = disabled || !presets.length;
 
   return (
     <DropdownMenu modal={false}>
-      <DropdownMenuTrigger asChild disabled={pickerDisabled}>
+      <DropdownMenuTrigger asChild disabled={!presets.length}>
         <Button
           type="button"
           variant="outline"
           aria-label={tx("settings.rows.currentModel", "Current configuration")}
-          disabled={pickerDisabled}
+          disabled={!presets.length}
           className={cn(
             "h-12 w-[min(430px,72vw)] justify-between rounded-full border-input bg-background px-3.5 text-[13px] font-normal shadow-none",
             "hover:bg-accent/55 focus-visible:ring-2 focus-visible:ring-ring",
-            pickerDisabled && "cursor-not-allowed opacity-60",
           )}
         >
           {selectedPreset ? (
@@ -7662,24 +7598,22 @@ function ModelPresetPicker({
             </DropdownMenuItem>
           );
         })}
-        {!disabled ? (
-          <div className="mt-1 border-t border-border/55 pt-1">
-            <DropdownMenuItem
-              onSelect={() => {
-                window.setTimeout(onCreateConfiguration, 0);
-              }}
-              className={cn(
-                "flex cursor-default items-center gap-2 rounded-[12px] px-2.5 py-2 text-[13px] font-medium",
-                "text-foreground focus:bg-muted/85 focus:text-foreground",
-              )}
-            >
-              <span className="grid h-5 w-5 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
-                <Plus className="h-3.5 w-3.5" aria-hidden />
-              </span>
-              <span>{tx("settings.models.addConfiguration", "Add configuration")}</span>
-            </DropdownMenuItem>
-          </div>
-        ) : null}
+        <div className="mt-1 border-t border-border/55 pt-1">
+          <DropdownMenuItem
+            onSelect={() => {
+              window.setTimeout(onCreateConfiguration, 0);
+            }}
+            className={cn(
+              "flex cursor-default items-center gap-2 rounded-[12px] px-2.5 py-2 text-[13px] font-medium",
+              "text-foreground focus:bg-muted/85 focus:text-foreground",
+            )}
+          >
+            <span className="grid h-5 w-5 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
+              <Plus className="h-3.5 w-3.5" aria-hidden />
+            </span>
+            <span>{tx("settings.models.addConfiguration", "Add configuration")}</span>
+          </DropdownMenuItem>
+        </div>
       </DropdownMenuContent>
     </DropdownMenu>
   );

@@ -159,7 +159,6 @@ interface ModelBadgeInfo {
   provider: string | null;
   providerLabel: string | null;
   needsSetup: boolean;
-  smartRoutingBadge?: boolean;
 }
 
 function activeModelPreset(settings: SettingsPayload | null): SettingsPayload["model_presets"][number] | null {
@@ -172,16 +171,8 @@ function activeModelPreset(settings: SettingsPayload | null): SettingsPayload["m
   );
 }
 
-function resolvedModelProvider(
-  settings: SettingsPayload | null,
-  modelName: string | null,
-  modelPresetName?: string | null,
-): string | null {
-  const preset = (
-    modelPresetName
-      ? settings?.model_presets.find((item) => item.name === modelPresetName)
-      : null
-  ) ?? activeModelPreset(settings);
+function resolvedModelProvider(settings: SettingsPayload | null, modelName: string | null): string | null {
+  const preset = activeModelPreset(settings);
   const rawProvider = preset?.provider || settings?.agent.provider || null;
   if (rawProvider === "auto") {
     return settings?.agent.resolved_provider || inferProviderFromModelName(modelName) || null;
@@ -189,31 +180,10 @@ function resolvedModelProvider(
   return rawProvider || inferProviderFromModelName(modelName);
 }
 
-function toModelBadgeInfo(
-  modelName: string | null,
-  settings: SettingsPayload | null,
-  modelPresetName?: string | null,
-): ModelBadgeInfo {
-  if (settings?.smart_model_routing?.enabled) {
-    const idlePreset = activeModelPreset(settings);
-    const idleProvider = resolvedModelProvider(settings, idlePreset?.model ?? settings.agent.model ?? null);
-    const idleProviderRow = idleProvider
-      ? settings.providers.find((item) => item.name === idleProvider)
-      : null;
-    return {
-      label: null,
-      provider: null,
-      providerLabel: null,
-      needsSetup: Boolean(
-        !idlePreset?.model || !idleProvider || !idleProviderRow || !idleProviderRow.configured,
-      ),
-      smartRoutingBadge: true,
-    };
-  }
-
+function toModelBadgeInfo(modelName: string | null, settings: SettingsPayload | null): ModelBadgeInfo {
   const model = modelName || settings?.agent.model || null;
   const label = toModelBadgeLabel(model);
-  const provider = resolvedModelProvider(settings, model, modelPresetName);
+  const provider = resolvedModelProvider(settings, model);
   const providerRow = provider
     ? settings?.providers.find((item) => item.name === provider)
     : null;
@@ -392,7 +362,6 @@ export function ThreadShell({
     isStreaming,
     runStartedAt,
     goalState,
-    turnRoutingInfo,
     send,
     transcribeAudio,
     stop,
@@ -431,42 +400,12 @@ export function ThreadShell({
   const showHeroComposer = messages.length === 0 && !loading;
   const wasShowingHeroComposerRef = useRef(showHeroComposer);
   const modelBadge = useMemo(
-    () => toModelBadgeInfo(
-      turnRoutingInfo?.modelName ?? modelName,
-      settings,
-      turnRoutingInfo?.modelPreset,
-    ),
-    [turnRoutingInfo, modelName, settings],
+    () => toModelBadgeInfo(modelName, settings),
+    [modelName, settings],
   );
-  const modelRoutingHint = useMemo(() => {
-    switch (turnRoutingInfo?.decisionReason) {
-      case "kept_for_cache":
-      case "no_candidate_affinity":
-      case "classifier_fallback":
-        return t("thread.composer.routingCacheRetained", {
-          defaultValue: "Warm prompt cache retained",
-        });
-      case "same_cache_identity":
-        return t("thread.composer.routingSameModel", {
-          defaultValue: "Preset adjusted without changing the cached model",
-        });
-      case "switched_score":
-        return t("thread.composer.routingSwitched", {
-          defaultValue: "Switched models for this task",
-        });
-      default:
-        return turnRoutingInfo
-          ? t("thread.composer.routingSelected", {
-              defaultValue: "Selected by smart model routing",
-            })
-          : null;
-    }
-  }, [t, turnRoutingInfo]);
   const modelBadgeLabel = modelBadge.needsSetup
     ? t("thread.composer.modelNotConfigured", { defaultValue: "Model not configured" })
-    : modelBadge.smartRoutingBadge
-      ? t("thread.composer.smartModelRoutingBadge", { defaultValue: "Smart" })
-      : modelBadge.label;
+    : modelBadge.label;
   useEffect(() => {
     if (showHeroComposer && !wasShowingHeroComposerRef.current) {
       setHeroGreetingKey(randomHeroGreetingKey());
@@ -784,7 +723,6 @@ export function ThreadShell({
           modelLabel={modelBadgeLabel}
           modelProvider={modelBadge.provider}
           modelProviderLabel={modelBadge.providerLabel}
-          modelRoutingHint={modelRoutingHint}
           modelNeedsSetup={modelBadge.needsSetup}
           onModelBadgeClick={modelBadge.needsSetup ? onOpenModelSettings : undefined}
           variant={showHeroComposer ? "hero" : "thread"}
@@ -818,7 +756,6 @@ export function ThreadShell({
           modelLabel={modelBadgeLabel}
           modelProvider={modelBadge.provider}
           modelProviderLabel={modelBadge.providerLabel}
-          modelRoutingHint={modelRoutingHint}
           modelNeedsSetup={modelBadge.needsSetup}
           onModelBadgeClick={modelBadge.needsSetup ? onOpenModelSettings : undefined}
           variant="hero"

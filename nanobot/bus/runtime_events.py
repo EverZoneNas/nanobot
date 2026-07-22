@@ -70,33 +70,12 @@ class RuntimeModelChanged:
     model_preset: str | None
 
 
-@dataclass(frozen=True)
-class TurnModelRouted:
-    """A cache-aware per-turn model route was selected."""
-
-    context: RuntimeEventContext
-    model: str
-    model_preset: str | None
-    task_kind: str
-    task_type: str | None = None
-    complexity: str | None = None
-    candidate_model: str | None = None
-    candidate_model_preset: str | None = None
-    decision_reason: str | None = None
-    switch_score: float | None = None
-    quality_benefit: float | None = None
-    cache_penalty: float | None = None
-    estimated_reusable_tokens: int = 0
-    ephemeral: bool = True
-
-
 RuntimeEvent = (
     SessionTurnStarted
     | TurnRunStatusChanged
     | TurnCompleted
     | GoalStateChanged
     | RuntimeModelChanged
-    | TurnModelRouted
 )
 RuntimeEventType = (
     type[SessionTurnStarted]
@@ -104,7 +83,6 @@ RuntimeEventType = (
     | type[TurnCompleted]
     | type[GoalStateChanged]
     | type[RuntimeModelChanged]
-    | type[TurnModelRouted]
 )
 RuntimeEventHandler = Callable[[Any], Awaitable[None] | None]
 _HandlerEntry = tuple[RuntimeEventType | None, RuntimeEventHandler]
@@ -254,49 +232,6 @@ class RuntimeEventPublisher:
     def runtime_model_changed(self, model: str, model_preset: str | None) -> None:
         self.bus.publish_nowait(
             RuntimeModelChanged(model=model, model_preset=model_preset)
-        )
-
-    def turn_model_routed(
-        self,
-        *,
-        model: str,
-        model_preset: str | None,
-        task_kind: str,
-        task_type: str | None,
-        complexity: str | None,
-        channel: str,
-        chat_id: str,
-        session_key: str,
-        candidate_model: str | None = None,
-        candidate_model_preset: str | None = None,
-        decision_reason: str | None = None,
-        switch_score: float | None = None,
-        quality_benefit: float | None = None,
-        cache_penalty: float | None = None,
-        estimated_reusable_tokens: int = 0,
-        metadata: dict[str, Any] | None = None,
-    ) -> None:
-        self.bus.publish_nowait(
-            TurnModelRouted(
-                context=self._context(
-                    channel=channel,
-                    chat_id=chat_id,
-                    session_key=session_key,
-                    metadata=metadata,
-                ),
-                model=model,
-                model_preset=model_preset,
-                task_kind=task_kind,
-                task_type=task_type,
-                complexity=complexity,
-                candidate_model=candidate_model,
-                candidate_model_preset=candidate_model_preset,
-                decision_reason=decision_reason,
-                switch_score=switch_score,
-                quality_benefit=quality_benefit,
-                cache_penalty=cache_penalty,
-                estimated_reusable_tokens=estimated_reusable_tokens,
-            )
         )
 
 

@@ -773,9 +773,6 @@ def settings_payload(
             "bot_icon": defaults.bot_icon,
             "tool_hint_max_length": defaults.tool_hint_max_length,
         },
-        "smart_model_routing": {
-            "enabled": defaults.smart_model_routing.enabled,
-        },
         "model_presets": model_presets,
         "providers": providers,
         "web_search": {
@@ -875,27 +872,12 @@ def update_agent_settings(query: QueryParams) -> dict[str, Any]:
     changed = False
     restart_required = False
 
-    smart_model_routing_enabled = _query_first_alias(
-        query,
-        "smart_model_routing_enabled",
-        "smartModelRoutingEnabled",
-    )
-    if smart_model_routing_enabled is not None:
-        parsed_enabled = _parse_bool(smart_model_routing_enabled, "smart_model_routing_enabled")
-        if defaults.smart_model_routing.enabled != parsed_enabled:
-            defaults.smart_model_routing.enabled = parsed_enabled
-            changed = True
-
     if "model_preset" in query or "modelPreset" in query:
         preset = (_query_first_alias(query, "model_preset", "modelPreset") or "").strip()
         preset_value = None if not preset or preset == "default" else preset
         if preset_value is not None and preset_value not in config.model_presets:
             raise WebUISettingsError("unknown model preset")
         if defaults.model_preset != preset_value:
-            if defaults.smart_model_routing.enabled:
-                raise WebUISettingsError(
-                    "model preset cannot be changed while smart model routing is enabled"
-                )
             defaults.model_preset = preset_value
             changed = True
 
@@ -1011,8 +993,7 @@ def create_model_configuration(query: QueryParams) -> dict[str, Any]:
         temperature=base.temperature,
         reasoning_effort=base.reasoning_effort,
     )
-    if not config.agents.defaults.smart_model_routing.enabled:
-        config.agents.defaults.model_preset = name
+    config.agents.defaults.model_preset = name
     save_config(config)
     return settings_payload()
 
@@ -1066,10 +1047,7 @@ def update_model_configuration(query: QueryParams) -> dict[str, Any]:
         preset.context_window_tokens = context_window_tokens
         changed = True
 
-    if (
-        not config.agents.defaults.smart_model_routing.enabled
-        and config.agents.defaults.model_preset != name
-    ):
+    if config.agents.defaults.model_preset != name:
         config.agents.defaults.model_preset = name
         changed = True
 

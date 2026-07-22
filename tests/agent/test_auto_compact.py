@@ -13,7 +13,6 @@ from nanobot.bus.queue import MessageBus
 from nanobot.command import CommandContext
 from nanobot.config.schema import AgentDefaults
 from nanobot.providers.base import LLMResponse
-from nanobot.session.routing_state import MODEL_ROUTING_AFFINITY_KEY
 
 
 def _make_loop(
@@ -1248,15 +1247,13 @@ class TestSummaryPersistence:
         # Verify summary exists before /new
         reloaded = loop.sessions.get_or_create("cli:test")
         assert "_last_summary" in reloaded.metadata
-        reloaded.metadata[MODEL_ROUTING_AFFINITY_KEY] = {"preset": "deep"}
 
         # Simulate /new command
-        reloaded.clear()
-        loop.sessions.save(reloaded)
-        loop.sessions.invalidate(reloaded.key)
+        session.clear()
+        loop.sessions.save(session)
+        loop.sessions.invalidate(session.key)
 
         # After /new, metadata should no longer contain _last_summary
         fresh = loop.sessions.get_or_create("cli:test")
         assert "_last_summary" not in fresh.metadata
-        assert MODEL_ROUTING_AFFINITY_KEY not in fresh.metadata
         await loop.close_mcp()

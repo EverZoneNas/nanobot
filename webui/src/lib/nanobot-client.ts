@@ -7,7 +7,6 @@ import type {
   OutboundMcpPresetMention,
   OutboundMedia,
   GoalStateWsPayload,
-  TurnRoutingInfo,
   WorkspaceScopePayload,
 } from "./types";
 import { createHostWebSocket } from "./runtime";
@@ -67,10 +66,6 @@ type Unsubscribe = () => void;
 type EventHandler = (ev: InboundEvent) => void;
 type StatusHandler = (status: ConnectionStatus) => void;
 type RuntimeModelHandler = (modelName: string | null, modelPreset?: string | null) => void;
-type TurnModelRoutedHandler = (
-  chatId: string,
-  routing: TurnRoutingInfo,
-) => void;
 type SessionUpdateScope = "metadata" | "thread" | string;
 type SessionUpdateHandler = (
   chatId: string,
@@ -128,7 +123,6 @@ export class NanobotClient {
   private socket: WebSocket | null = null;
   private statusHandlers = new Set<StatusHandler>();
   private runtimeModelHandlers = new Set<RuntimeModelHandler>();
-  private turnModelRoutedHandlers = new Set<TurnModelRoutedHandler>();
   private sessionUpdateHandlers = new Set<SessionUpdateHandler>();
   private runStatusHandlers = new Set<RunStatusHandler>();
   private errorHandlers = new Set<ErrorHandler>();
@@ -143,8 +137,6 @@ export class NanobotClient {
   private runStartedAtByChatId = new Map<string, number>();
   /** Latest ``goal_state`` snapshot per ``chat_id`` (multi-session isolation). */
   private goalStateByChatId = new Map<string, GoalStateWsPayload>();
-  /** Latest per-turn routing decision per ``chat_id`` for dev/debug UI. */
-  private turnRoutingByChatId = new Map<string, TurnRoutingInfo>();
   private pendingNewChat: PendingNewChat | null = null;
   private pendingTranscriptions = new Map<string, PendingTranscription>();
   // Frames queued while the socket is not yet OPEN
@@ -199,13 +191,6 @@ export class NanobotClient {
     };
   }
 
-  onTurnModelRouted(handler: TurnModelRoutedHandler): Unsubscribe {
-    this.turnModelRoutedHandlers.add(handler);
-    return () => {
-      this.turnModelRoutedHandlers.delete(handler);
-    };
-  }
-
   onSessionUpdate(handler: SessionUpdateHandler): Unsubscribe {
     this.sessionUpdateHandlers.add(handler);
     return () => {
@@ -242,14 +227,8 @@ export class NanobotClient {
     return this.goalStateByChatId.get(chatId);
   }
 
-  /** Last ``turn_model_routed`` payload for *chatId*, if any frame has arrived this connection. */
-  getTurnRoutingInfo(chatId: string): TurnRoutingInfo | undefined {
-    return this.turnRoutingByChatId.get(chatId);
-  }
-
   private recordGoalStatusForRunStrip(chatId: string, ev: InboundEvent): void {
     if (ev.event === "turn_end") {
-      this.turnRoutingByChatId.delete(chatId);
       if (this.runStartedAtByChatId.has(chatId)) {
         this.runStartedAtByChatId.delete(chatId);
         this.emitRunStatus(chatId, null);
@@ -506,38 +485,6 @@ export class NanobotClient {
       return;
     }
 
-    if (parsed.event === "turn_model_routed") {
-      const routing: TurnRoutingInfo = {
-        modelName: parsed.model_name,
-        modelPreset: parsed.model_preset ?? null,
-        ...(parsed.turn_id ? { turnId: parsed.turn_id } : {}),
-        taskKind: parsed.task_kind,
-        taskType: parsed.task_type ?? null,
-        complexity: parsed.complexity ?? null,
-        ...(parsed.candidate_model_name !== undefined
-          ? { candidateModelName: parsed.candidate_model_name }
-          : {}),
-        ...(parsed.candidate_model_preset !== undefined
-          ? { candidateModelPreset: parsed.candidate_model_preset }
-          : {}),
-        ...(parsed.decision_reason !== undefined
-          ? { decisionReason: parsed.decision_reason }
-          : {}),
-        ...(parsed.switch_score !== undefined ? { switchScore: parsed.switch_score } : {}),
-        ...(parsed.quality_benefit !== undefined
-          ? { qualityBenefit: parsed.quality_benefit }
-          : {}),
-        ...(parsed.cache_penalty !== undefined ? { cachePenalty: parsed.cache_penalty } : {}),
-        ...(parsed.estimated_reusable_tokens !== undefined
-          ? { estimatedReusableTokens: parsed.estimated_reusable_tokens }
-          : {}),
-        ephemeral: parsed.ephemeral,
-      };
-      this.turnRoutingByChatId.set(parsed.chat_id, routing);
-      this.emitTurnModelRouted(parsed.chat_id, routing);
-      return;
-    }
-
     if (parsed.event === "transcription_result") {
       this.resolveTranscription(parsed.request_id, parsed.text);
       return;
@@ -585,15 +532,6 @@ export class NanobotClient {
   private emitRuntimeModelUpdate(modelName: string | null, modelPreset?: string | null): void {
     for (const handler of this.runtimeModelHandlers) {
       handler(modelName, modelPreset);
-    }
-  }
-
-  private emitTurnModelRouted(
-    chatId: string,
-    routing: TurnRoutingInfo,
-  ): void {
-    for (const handler of this.turnModelRoutedHandlers) {
-      handler(chatId, routing);
     }
   }
 

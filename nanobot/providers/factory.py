@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from nanobot.config.schema import Config, InlineFallbackConfig, ModelPresetConfig, ProviderConfig
 from nanobot.providers.base import LLMProvider
@@ -20,48 +17,6 @@ class ProviderSnapshot:
     model: str
     context_window_tokens: int
     signature: tuple[object, ...]
-    cache_identity: str = ""
-
-
-def _identity_digest(payload: Any) -> str:
-    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, default=str)
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
-def provider_cache_identity(
-    config: Config,
-    *,
-    preset_name: str | None = None,
-    preset: ModelPresetConfig | None = None,
-) -> str:
-    """Return a credential-safe identity for provider-side prompt caches."""
-    resolved = _resolve_model_preset(config, preset_name=preset_name, preset=preset)
-    provider_name = config.get_provider_name(resolved.model, preset=resolved)
-    provider_config = config.get_provider(resolved.model, preset=resolved)
-    spec = find_by_name(provider_name) if provider_name else None
-    return _identity_digest({
-        "model": resolved.model,
-        "resolved_provider": provider_name,
-        "api_key": config.get_api_key(resolved.model, preset=resolved),
-        "api_base": config.get_api_base(resolved.model, preset=resolved),
-        "headers": _provider_extra_headers(spec, provider_config),
-        "extra_body": provider_config.extra_body if provider_config else None,
-        "api_type": provider_config.api_type if provider_config else "auto",
-        "extra_query": provider_config.extra_query if provider_config else None,
-        "region": getattr(provider_config, "region", None),
-        "profile": getattr(provider_config, "profile", None),
-        "proxy": getattr(provider_config, "proxy", None),
-    })
-
-
-def runtime_provider_cache_identity(provider: LLMProvider, model: str) -> str:
-    """Best-effort cache identity when no config-derived snapshot is available."""
-    return _identity_digest({
-        "provider_type": f"{type(provider).__module__}.{type(provider).__qualname__}",
-        "model": model,
-        "api_base": getattr(provider, "api_base", None),
-        "api_key": getattr(provider, "api_key", None),
-    })
 
 
 def _resolve_model_preset(
@@ -313,7 +268,6 @@ def build_provider_snapshot(
         model=resolved.model,
         context_window_tokens=min([resolved.context_window_tokens, *fallback_windows]),
         signature=provider_signature(config, preset=resolved),
-        cache_identity=provider_cache_identity(config, preset=resolved),
     )
 
 
