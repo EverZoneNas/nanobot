@@ -23,13 +23,6 @@ from nanobot.agent.context import ContextBuilder
 from nanobot.agent.cron_turns import CronTurnCoordinator
 from nanobot.agent.hook import AgentHook, AgentTurnHookFactory
 from nanobot.agent.memory import Consolidator
-from nanobot.agent.model_routing import (
-    ModelRouter,
-    RoutingContext,
-    RoutingDecision,
-    extract_user_text,
-    infer_task_kind,
-)
 from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
@@ -56,7 +49,7 @@ from nanobot.bus.runtime_events import (
 from nanobot.command import CommandContext, CommandRouter, register_builtin_commands
 from nanobot.config.schema import AgentDefaults, ModelPresetConfig
 from nanobot.providers.base import LLMProvider
-from nanobot.providers.factory import ProviderSnapshot, runtime_provider_cache_identity
+from nanobot.providers.factory import ProviderSnapshot
 from nanobot.security.workspace_access import (
     WorkspaceScopeResolver,
     bind_workspace_scope,
@@ -78,7 +71,7 @@ from nanobot.session.manager import (
 )
 from nanobot.triggers.local_turns import LocalTriggerTurnCoordinator
 from nanobot.utils.document import extract_documents, reference_non_image_attachments
-from nanobot.utils.helpers import estimate_prompt_tokens, image_placeholder_text
+from nanobot.utils.helpers import image_placeholder_text
 from nanobot.utils.helpers import truncate_text as truncate_text_fn
 from nanobot.utils.image_generation_intent import image_generation_prompt
 from nanobot.utils.llm_runtime import LLMRuntime
@@ -230,11 +223,9 @@ class AgentLoop:
         image_generation_provider_configs: dict[str, ProviderConfig] | None = None,
         provider_snapshot_loader: Callable[..., ProviderSnapshot] | None = None,
         provider_signature: tuple[object, ...] | None = None,
-        provider_cache_identity: str | None = None,
         model_presets: dict[str, ModelPresetConfig] | None = None,
         model_preset: str | None = None,
         preset_snapshot_loader: preset_helpers.PresetSnapshotLoader | None = None,
-        model_router: ModelRouter | None = None,
         runtime_events: RuntimeEventBus | None = None,
         runtime_model_publisher: Callable[[str, str | None], None] | None = None,
         restart_mode: str = "auto",
@@ -252,13 +243,8 @@ class AgentLoop:
         self.provider = provider
         self._provider_snapshot_loader = provider_snapshot_loader
         self._preset_snapshot_loader = preset_snapshot_loader
-        self._model_router = model_router
         self._runtime_model_publisher = runtime_model_publisher
         self._provider_signature = provider_signature
-        self._provider_cache_identity = provider_cache_identity or runtime_provider_cache_identity(
-            provider,
-            model or provider.get_default_model(),
-        )
         self._default_selection_signature = preset_helpers.default_selection_signature(provider_signature)
         self.workspace = workspace
         self.model = model or provider.get_default_model()
@@ -322,7 +308,6 @@ class AgentLoop:
             max_concurrent_subagents=max_concurrent_subagents,
             fail_on_tool_error=fail_on_tool_error,
             llm_wall_timeout_for_session=lambda sk: runner_wall_llm_timeout_s(self.sessions, sk),
-            model_router=model_router,
         )
         self._unified_session = unified_session
         self._max_messages = replay_max_messages_for_context(self.context_window_tokens)
@@ -399,43 +384,20 @@ class AgentLoop:
         allowing callers to override or extend the standard config-derived
         parameters (e.g. ``cron_service``, ``session_manager``).
         """
-        from nanobot.agent.model_routing import ModelRouter
-        from nanobot.providers.factory import (
-            build_provider_snapshot,
-            make_provider,
-            provider_cache_identity,
-            runtime_provider_cache_identity,
-        )
+        from nanobot.providers.factory import make_provider
 
         if bus is None:
             bus = MessageBus()
         defaults = config.agents.defaults
+        provider = extra.pop("provider", None) or make_provider(config)
         resolved = config.resolve_preset()
-        supplied_provider = extra.pop("provider", None)
-        provider = supplied_provider or make_provider(config)
         model = extra.pop("model", None) or resolved.model
         context_window_tokens = extra.pop("context_window_tokens", None) or resolved.context_window_tokens
-        cache_identity = extra.pop("provider_cache_identity", None)
-        if cache_identity is None:
-            cache_identity = (
-                runtime_provider_cache_identity(provider, model)
-                if supplied_provider is not None and extra.get("provider_signature") is None
-                else provider_cache_identity(config, preset=resolved)
-            )
         provider_snapshot_loader = extra.pop("provider_snapshot_loader", None)
         preset_snapshot_loader = extra.pop("preset_snapshot_loader", None) or preset_helpers.make_preset_snapshot_loader(
             config,
             provider_snapshot_loader,
         )
-        model_router = extra.pop("model_router", None)
-        if model_router is None:
-            model_router = ModelRouter(
-                routing=defaults.smart_model_routing,
-                dream=defaults.dream,
-                load_preset=preset_snapshot_loader,
-                build_inline_snapshot=lambda preset: build_provider_snapshot(config, preset=preset),
-                resolve_preset=lambda name: config.resolve_preset(name),
-            )
         return cls(
             bus=bus,
             provider=provider,
@@ -462,9 +424,7 @@ class AgentLoop:
             model_preset=defaults.model_preset,
             restart_mode=config.gateway.restart_mode,
             provider_snapshot_loader=provider_snapshot_loader,
-            provider_cache_identity=cache_identity,
             preset_snapshot_loader=preset_snapshot_loader,
-            model_router=model_router,
             **extra,
         )
 
@@ -488,18 +448,10 @@ class AgentLoop:
         self.model = model
         self.context_window_tokens = context_window_tokens
         self.runner.provider = provider
-        self.subagents.set_provider(
-            provider,
-            model,
-            model_preset if model_preset is not None else self._active_preset,
-        )
+        self.subagents.set_provider(provider, model)
         self.consolidator.set_provider(provider, model, context_window_tokens)
         self._sync_replay_max_messages()
         self._provider_signature = snapshot.signature
-        self._provider_cache_identity = snapshot.cache_identity or runtime_provider_cache_identity(
-            provider,
-            model,
-        )
         if publish_update and self._runtime_model_publisher is not None:
             self._runtime_model_publisher(
                 self.model,
@@ -924,79 +876,11 @@ class AgentLoop:
             )
 
         session_metadata = session.metadata if session is not None else None
-        route_spec_kwargs: dict[str, Any] = {}
-        routing_decision: RoutingDecision | None = None
-        if self._model_router is not None and self._model_router.enabled:
-            active_session_key = session.key if session is not None else session_key
-            prompt_tokens_estimate = estimate_prompt_tokens(
-                initial_messages,
-                effective_tools.get_definitions(),
-            )
-            routing_ctx = RoutingContext(
-                user_text=extract_user_text(initial_messages),
-                task_kind=infer_task_kind(
-                    session_key=active_session_key,
-                    session_metadata=session_metadata,
-                    message_metadata=metadata,
-                ),
-                session_metadata=session_metadata,
-                message_metadata=metadata,
-                session_key=active_session_key,
-                prompt_tokens_estimate=prompt_tokens_estimate,
-            )
-            baseline_snapshot = ProviderSnapshot(
-                provider=self.provider,
-                model=self.model,
-                context_window_tokens=self.context_window_tokens,
-                signature=self._provider_signature or (),
-                cache_identity=self._provider_cache_identity,
-            )
-            routing_decision = await self._model_router.resolve_turn_route(
-                routing_ctx,
-                baseline_snapshot=baseline_snapshot,
-                baseline_preset=self._active_preset,
-            )
-            route = routing_decision.selected
-            candidate = routing_decision.candidate
-            route_spec_kwargs = route.to_run_spec_kwargs()
-            logger.info(
-                "Model route decision: reason={} selected={} model={} candidate={} "
-                "task_kind={} task_type={} complexity={} score={} cache_penalty={} "
-                "reusable_tokens={}",
-                routing_decision.reason,
-                route.preset_name,
-                route.snapshot.model,
-                candidate.preset_name if candidate is not None else None,
-                route.task_kind,
-                route.task_type,
-                route.complexity,
-                routing_decision.switch_score,
-                routing_decision.cache_penalty,
-                routing_decision.estimated_reusable_tokens,
-            )
-            self._runtime_events().turn_model_routed(
-                model=route.snapshot.model,
-                model_preset=route.preset_name,
-                task_kind=route.task_kind,
-                task_type=route.task_type,
-                complexity=route.complexity,
-                candidate_model=candidate.snapshot.model if candidate is not None else None,
-                candidate_model_preset=candidate.preset_name if candidate is not None else None,
-                decision_reason=routing_decision.reason,
-                switch_score=routing_decision.switch_score,
-                quality_benefit=routing_decision.quality_benefit,
-                cache_penalty=routing_decision.cache_penalty,
-                estimated_reusable_tokens=routing_decision.estimated_reusable_tokens,
-                channel=channel,
-                chat_id=chat_id,
-                session_key=active_session_key,
-                metadata=metadata,
-            )
         try:
             result = await self.runner.run(AgentRunSpec(
                 initial_messages=initial_messages,
                 tools=effective_tools,
-                model=route_spec_kwargs.get("model", self.model),
+                model=self.model,
                 max_iterations=self.max_iterations,
                 max_tool_result_chars=self.max_tool_result_chars,
                 hook=hook,
@@ -1004,10 +888,7 @@ class AgentLoop:
                 concurrent_tools=True,
                 workspace=effective_scope.project_path,
                 session_key=session.key if session else None,
-                context_window_tokens=route_spec_kwargs.get(
-                    "context_window_tokens",
-                    self.context_window_tokens,
-                ),
+                context_window_tokens=self.context_window_tokens,
                 context_block_limit=self.context_block_limit,
                 provider_retry_mode=self.provider_retry_mode,
                 progress_callback=on_progress,
@@ -1030,24 +911,12 @@ class AgentLoop:
                     session_metadata=session_metadata,
                     message_metadata=metadata,
                 ),
-                temperature=route_spec_kwargs.get("temperature"),
-                max_tokens=route_spec_kwargs.get("max_tokens"),
-                reasoning_effort=route_spec_kwargs.get("reasoning_effort"),
-                route_provider=route_spec_kwargs.get("route_provider"),
-                routed_preset=route_spec_kwargs.get("routed_preset"),
             ))
         finally:
             reset_workspace_scope(workspace_token)
             reset_request_context(request_token)
             reset_file_states(file_state_token)
         self._last_usage = result.usage
-        if routing_decision is not None and self._model_router is not None:
-            self._model_router.record_outcome(
-                routing_decision,
-                session_metadata=session_metadata,
-                usage=result.usage,
-                stop_reason=result.stop_reason,
-            )
         if result.stop_reason == "max_iterations":
             logger.warning("Max iterations ({}) reached", self.max_iterations)
             should_stream = turn_continuation.should_stream_budget_response(

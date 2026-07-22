@@ -7,11 +7,7 @@ from typing import Any
 
 from nanobot.config.schema import ModelPresetConfig
 from nanobot.providers.base import LLMProvider
-from nanobot.providers.factory import (
-    ProviderSnapshot,
-    build_provider_snapshot,
-    runtime_provider_cache_identity,
-)
+from nanobot.providers.factory import ProviderSnapshot, build_provider_snapshot
 
 PresetSnapshotLoader = Callable[[str], ProviderSnapshot]
 
@@ -44,7 +40,6 @@ def build_static_preset_snapshot(
         model=preset.model,
         context_window_tokens=preset.context_window_tokens,
         signature=("model_preset", name, preset.model_dump_json()),
-        cache_identity=runtime_provider_cache_identity(provider, preset.model),
     )
 
 
@@ -67,3 +62,4 @@ def normalize_preset_name(name: str | None, presets: dict[str, ModelPresetConfig
     if name not in presets:
         raise KeyError(f"model_preset {name!r} not found. Available: {', '.join(presets) or '(none)'}")
     return name
+

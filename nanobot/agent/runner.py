@@ -86,8 +86,6 @@ class AgentRunSpec:
     goal_active_predicate: Callable[[], bool] | None = None
     goal_continue_message: GoalContinueMessage | None = None
     finalize_on_max_iterations: bool = True
-    route_provider: LLMProvider | None = None
-    routed_preset: str | None = None
 
 
 @dataclass(slots=True)
@@ -110,10 +108,6 @@ class AgentRunner:
     def __init__(self, provider: LLMProvider):
         self.provider = provider
         self.context_governor = ContextGovernor()
-
-    @staticmethod
-    def _effective_provider(spec: AgentRunSpec, default: LLMProvider) -> LLMProvider:
-        return spec.route_provider or default
 
     @staticmethod
     def _merge_message_content(left: Any, right: Any) -> str | list[dict[str, Any]]:
@@ -350,7 +344,7 @@ class AgentRunner:
         injection_cycles = 0
         compacted_tool_call_ids: set[str] = set()
         governance_config = ContextGovernanceConfig(
-            provider=self._effective_provider(spec, self.provider),
+            provider=self.provider,
             model=spec.model,
             tools=spec.tools,
             workspace=spec.workspace,
@@ -747,13 +741,12 @@ class AgentRunner:
             messages,
             tools=spec.tools.get_definitions(),
         )
-        provider = self._effective_provider(spec, self.provider)
         wants_streaming = hook.wants_streaming()
         wants_progress_streaming = (
             not wants_streaming
             and spec.stream_progress_deltas
             and spec.progress_callback is not None
-            and getattr(provider, "supports_progress_deltas", False) is True
+            and getattr(self.provider, "supports_progress_deltas", False) is True
         )
 
         progress_state: dict[str, bool] | None = None
@@ -781,7 +774,7 @@ class AgentRunner:
             async def _stream_recover() -> None:
                 await hook.on_stream_end(context, resuming=True)
 
-            coro = provider.chat_stream_with_retry(
+            coro = self.provider.chat_stream_with_retry(
                 **kwargs,
                 on_content_delta=_stream,
                 on_thinking_delta=_thinking,
@@ -812,12 +805,12 @@ class AgentRunner:
                     context.streamed_content = True
                     await spec.progress_callback(incremental)
 
-            coro = provider.chat_stream_with_retry(
+            coro = self.provider.chat_stream_with_retry(
                 **kwargs,
                 on_content_delta=_stream_progress,
             )
         else:
-            coro = provider.chat_with_retry(**kwargs)
+            coro = self.provider.chat_with_retry(**kwargs)
 
         # Streaming requests already have provider-level idle timeouts
         # (NANOBOT_STREAM_IDLE_TIMEOUT_S). Do not also apply the outer wall-clock
@@ -992,8 +985,7 @@ class AgentRunner:
         messages: list[dict[str, Any]],
     ) -> LLMResponse:
         kwargs = self._build_request_kwargs(spec, messages, tools=None)
-        provider = self._effective_provider(spec, self.provider)
-        return await provider.chat_with_retry(**kwargs)
+        return await self.provider.chat_with_retry(**kwargs)
 
     @staticmethod
     def _budget_exhausted_finalization_messages(
@@ -1041,8 +1033,7 @@ class AgentRunner:
             tools = spec.tools.get_definitions()
         except Exception:
             tools = None
-        provider = self._effective_provider(spec, self.provider)
-        prompt_tokens, _ = estimate_prompt_tokens_chain(provider, spec.model, messages, tools)
+        prompt_tokens, _ = estimate_prompt_tokens_chain(self.provider, spec.model, messages, tools)
         assistant_message = build_assistant_message(
             response.content or "",
             tool_calls=[tc.to_openai_tool_call() for tc in response.tool_calls],

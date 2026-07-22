@@ -571,9 +571,6 @@ export async function updateSettings(
   if (update.modelPreset !== undefined) {
     query.set("model_preset", update.modelPreset ?? "default");
   }
-  if (update.smartModelRoutingEnabled !== undefined) {
-    query.set("smart_model_routing_enabled", update.smartModelRoutingEnabled ? "true" : "false");
-  }
   if (update.model !== undefined) query.set("model", update.model);
   if (update.provider !== undefined) query.set("provider", update.provider);
   if (update.contextWindowTokens !== undefined) {
