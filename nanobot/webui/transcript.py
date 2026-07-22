@@ -1241,9 +1241,11 @@ def model_routing_from_transcript_record(rec: dict[str, Any]) -> dict[str, Any]:
     model_preset = rec.get("model_preset")
     if isinstance(model_preset, str) and model_preset.strip():
         routing["modelPreset"] = model_preset.strip()
-    task_kind = rec.get("task_kind")
-    if isinstance(task_kind, str) and task_kind.strip():
-        routing["taskKind"] = task_kind.strip()
+    run_kind = rec.get("run_kind")
+    if not isinstance(run_kind, str) or not run_kind.strip():
+        run_kind = rec.get("task_kind")
+    if isinstance(run_kind, str) and run_kind.strip():
+        routing["runKind"] = run_kind.strip()
     task_type = rec.get("task_type")
     if isinstance(task_type, str) and task_type.strip():
         routing["taskType"] = task_type.strip()

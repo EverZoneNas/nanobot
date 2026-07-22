@@ -284,7 +284,7 @@ describe("NanobotClient", () => {
       chat_id: "chat-route",
       model_name: "claude-opus-4-5",
       model_preset: "deep",
-      task_kind: "chat",
+      run_kind: "chat",
       task_type: "coding",
       complexity: "high",
       ephemeral: true,
@@ -293,7 +293,7 @@ describe("NanobotClient", () => {
     expect(client.getTurnRoutingInfo("chat-route")).toEqual({
       modelName: "claude-opus-4-5",
       modelPreset: "deep",
-      taskKind: "chat",
+      runKind: "chat",
       taskType: "coding",
       complexity: "high",
       ephemeral: true,
@@ -301,10 +301,33 @@ describe("NanobotClient", () => {
     expect(handler).toHaveBeenCalledWith("chat-route", {
       modelName: "claude-opus-4-5",
       modelPreset: "deep",
-      taskKind: "chat",
+      runKind: "chat",
       taskType: "coding",
       complexity: "high",
       ephemeral: true,
+    });
+  });
+
+  it("reads legacy task_kind routing events as runKind", () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    client.connect();
+    lastSocket().fakeOpen();
+    lastSocket().fakeMessage({
+      event: "turn_model_routed",
+      chat_id: "chat-route-legacy",
+      model_name: "gpt-4.1-mini",
+      model_preset: "fast",
+      task_kind: "cron",
+    });
+
+    expect(client.getTurnRoutingInfo("chat-route-legacy")).toMatchObject({
+      modelName: "gpt-4.1-mini",
+      modelPreset: "fast",
+      runKind: "cron",
     });
   });
 

@@ -200,10 +200,20 @@ export interface GoalStateWsPayload {
   objective?: string;
 }
 
+export type RunKind =
+  | "chat"
+  | "subagent"
+  | "cron"
+  | "local_trigger"
+  | "dream"
+  | "sustained_goal";
+
 export interface TurnRoutingInfo {
   turnId?: string;
   modelName: string;
   modelPreset?: string | null;
+  runKind?: string;
+  /** @deprecated Legacy persisted routing data; prefer ``runKind``. */
   taskKind?: string;
   taskType?: string | null;
   complexity?: string | null;
@@ -869,6 +879,8 @@ export type ModelRoutingDecisionReason =
 export interface TurnModelRoutePayload {
   model_name: string;
   model_preset?: string | null;
+  run_kind?: RunKind;
+  /** @deprecated Accepted from older gateways. */
   task_kind?: string;
   task_type?: string | null;
   complexity?: string | null;
@@ -940,6 +952,8 @@ export type InboundEvent =
       chat_id: string;
       model_name: string;
       model_preset?: string | null;
+      run_kind?: RunKind;
+      /** @deprecated Accepted from older gateways. */
       task_kind?: string;
       task_type?: string | null;
       complexity?: string | null;

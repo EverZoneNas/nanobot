@@ -116,7 +116,16 @@ class ModelPresetConfig(Base):
         )
 
 
-TaskKind = Literal["subagent", "cron", "dream", "sustained_goal", "chat"]
+RunKind = Literal[
+    "subagent",
+    "cron",
+    "local_trigger",
+    "dream",
+    "sustained_goal",
+    "chat",
+]
+# Deprecated compatibility alias. New code should use RunKind.
+TaskKind = RunKind
 TaskType = Literal["coding", "research", "admin", "chat", "other"]
 TaskComplexity = Literal["low", "medium", "high"]
 
@@ -124,10 +133,10 @@ TaskComplexity = Literal["low", "medium", "high"]
 class ModelRouteMatch(Base):
     """Criteria for a model routing rule."""
 
-    task_kind: TaskKind | None = Field(
+    run_kind: RunKind | None = Field(
         default=None,
-        validation_alias=AliasChoices("taskKind", "task_kind"),
-        serialization_alias="taskKind",
+        validation_alias=AliasChoices("runKind", "run_kind", "taskKind", "task_kind"),
+        serialization_alias="runKind",
     )
     task_type: TaskType | None = Field(
         default=None,
@@ -135,6 +144,11 @@ class ModelRouteMatch(Base):
         serialization_alias="taskType",
     )
     complexity: TaskComplexity | None = None
+
+    @property
+    def task_kind(self) -> RunKind | None:
+        """Deprecated compatibility alias for ``run_kind``."""
+        return self.run_kind
 
 
 class ModelRouteRule(Base):
@@ -145,7 +159,7 @@ class ModelRouteRule(Base):
 
 
 class ModelRoutingConfig(Base):
-    """Cache-aware model routing based on task kind, type, and complexity."""
+    """Cache-aware model routing based on run kind, task type, and complexity."""
 
     enabled: bool = False
     classifier_preset: str = Field(

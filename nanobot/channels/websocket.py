@@ -877,7 +877,7 @@ class WebSocketChannel(BaseChannel):
                 chat_id=msg.chat_id,
                 model_name=event.model,
                 model_preset=event.model_preset,
-                task_kind=event.task_kind,
+                run_kind=event.run_kind,
                 task_type=event.task_type,
                 complexity=event.complexity,
                 candidate_model=event.candidate_model,
@@ -1218,7 +1218,7 @@ class WebSocketChannel(BaseChannel):
         chat_id: str,
         model_name: str,
         model_preset: str | None = None,
-        task_kind: str = "chat",
+        run_kind: str = "chat",
         task_type: str | None = None,
         complexity: str | None = None,
         candidate_model: str | None = None,
@@ -1238,7 +1238,7 @@ class WebSocketChannel(BaseChannel):
             "event": "turn_model_routed",
             "chat_id": chat_id,
             "model_name": model_name.strip(),
-            "task_kind": task_kind,
+            "run_kind": run_kind,
             "ephemeral": True,
         }
         if isinstance(model_preset, str) and model_preset.strip():

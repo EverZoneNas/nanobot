@@ -1,4 +1,4 @@
-"""Tests for task-based per-turn model routing."""
+"""Tests for run-based per-turn model routing."""
 
 from __future__ import annotations
 
@@ -14,12 +14,14 @@ from nanobot.agent.model_routing import (
     TurnRoute,
     _parse_classifier_response,
     _rule_matches,
+    infer_run_kind,
     infer_task_kind,
 )
 from nanobot.agent.runner import AgentRunner, AgentRunSpec
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.config.schema import (
     Config,
+    DreamConfig,
     ModelPresetConfig,
     ModelRouteMatch,
     ModelRouteRule,
@@ -62,6 +64,7 @@ def _router(
     routing: ModelRoutingConfig,
     presets: dict[str, ModelPresetConfig] | None = None,
     classifier_response: str | None = None,
+    dream: DreamConfig | None = None,
 ) -> ModelRouter:
     presets = presets or {
         "fast": ModelPresetConfig(model="fast-model", provider="auto"),
@@ -88,7 +91,7 @@ def _router(
 
     return ModelRouter(
         routing=routing,
-        dream=Config().agents.defaults.dream,
+        dream=dream or Config().agents.defaults.dream,
         load_preset=load_preset,
         build_inline_snapshot=lambda preset: _snapshot(preset.model),
         resolve_preset=resolve_preset,
@@ -113,27 +116,87 @@ def test_config_rejects_unknown_routing_preset() -> None:
         })
 
 
-def test_infer_task_kind_for_subagent_and_dream() -> None:
-    assert infer_task_kind(
+def test_infer_run_kind_for_subagent_and_dream() -> None:
+    assert infer_run_kind(
         session_key="cli:direct",
         session_metadata=None,
         message_metadata=None,
-        explicit_task_kind="subagent",
+        explicit_run_kind="subagent",
     ) == "subagent"
-    assert infer_task_kind(
+    assert infer_run_kind(
         session_key="dream:20260101-120000",
         session_metadata=None,
         message_metadata=None,
     ) == "dream"
-    assert infer_task_kind(
+    assert infer_run_kind(
         session_key="cron:job-1",
         session_metadata=None,
         message_metadata=None,
     ) == "cron"
+    assert infer_task_kind(
+        session_key=None,
+        session_metadata=None,
+        message_metadata=None,
+        explicit_task_kind="subagent",
+    ) == "subagent"
+
+
+@pytest.mark.parametrize(
+    ("marker", "expected"),
+    [
+        ("_cron_trigger", "cron"),
+        ("_local_trigger", "local_trigger"),
+    ],
+)
+def test_infer_run_kind_for_bound_automation_precedes_active_goal(
+    marker: str,
+    expected: str,
+) -> None:
+    assert infer_run_kind(
+        session_key="websocket:existing-session",
+        session_metadata={"goal_state": {"status": "active", "objective": "ship release"}},
+        message_metadata={marker: {"id": "automation-1"}},
+    ) == expected
+
+
+def test_infer_run_kind_authoritative_precedence_and_marker_shape() -> None:
+    local_marker = {"_local_trigger": {"trigger_id": "trigger-1"}}
+    assert infer_run_kind(
+        session_key="dream:20260722-120000",
+        session_metadata=None,
+        message_metadata=local_marker,
+    ) == "dream"
+    assert infer_run_kind(
+        session_key="heartbeat",
+        session_metadata=None,
+        message_metadata=local_marker,
+    ) == "cron"
+    assert infer_run_kind(
+        session_key="websocket:session",
+        session_metadata={"goal_state": {"status": "active"}},
+        message_metadata=local_marker,
+        explicit_run_kind="subagent",
+    ) == "subagent"
+    assert infer_run_kind(
+        session_key="websocket:session",
+        session_metadata=None,
+        message_metadata={"_local_trigger": True},
+    ) == "chat"
+
+
+@pytest.mark.parametrize("alias", ["runKind", "run_kind", "taskKind", "task_kind"])
+def test_model_route_match_accepts_run_kind_aliases(alias: str) -> None:
+    match = ModelRouteMatch.model_validate({alias: "cron"})
+
+    assert match.run_kind == "cron"
+    assert match.task_kind == "cron"
+    dumped = match.model_dump(by_alias=True)
+    assert dumped["runKind"] == "cron"
+    assert "taskKind" not in dumped
 
 
 def test_rule_matching_precedence() -> None:
-    ctx = RoutingContext(user_text="fix bug", task_kind="chat", task_type="coding", complexity="high")
+    ctx = RoutingContext(user_text="fix bug", run_kind="chat", task_type="coding", complexity="high")
     rules = [
         ModelRouteRule(match=ModelRouteMatch(complexity="low"), preset="fast"),
         ModelRouteRule(match=ModelRouteMatch(task_type="coding", complexity="high"), preset="deep"),
@@ -251,7 +314,7 @@ async def test_zero_classifier_confidence_has_no_quality_benefit() -> None:
     decision = await router.resolve_turn_route(
         RoutingContext(
             user_text="maybe refactor",
-            task_kind="chat",
+            run_kind="chat",
             prompt_tokens_estimate=1,
             session_metadata=metadata,
         ),
@@ -280,7 +343,7 @@ async def test_resolve_turn_route_uses_classifier_for_chat() -> None:
     decision = await router.resolve_turn_route(
         RoutingContext(
             user_text="refactor the auth module",
-            task_kind="chat",
+            run_kind="chat",
             session_metadata={},
         ),
         baseline_snapshot=_snapshot("fast-model"),
@@ -296,6 +359,108 @@ async def test_resolve_turn_route_uses_classifier_for_chat() -> None:
     assert decision.reason == "initial_candidate"
 
 
+@pytest.mark.parametrize(
+    "run_kind",
+    ["subagent", "cron", "local_trigger", "dream", "sustained_goal"],
+)
+@pytest.mark.asyncio
+async def test_resolve_turn_route_uses_semantic_rules_for_every_run_kind(
+    run_kind: str,
+) -> None:
+    router = _router(
+        routing=ModelRoutingConfig(
+            enabled=True,
+            classifier_preset="fast",
+            rules=[
+                ModelRouteRule(
+                    match=ModelRouteMatch(
+                        run_kind=run_kind,
+                        task_type="coding",
+                        complexity="high",
+                    ),
+                    preset="deep",
+                ),
+            ],
+        ),
+    )
+    metadata: dict = {}
+
+    decision = await router.resolve_turn_route(
+        RoutingContext(
+            user_text="refactor the auth module",
+            run_kind=run_kind,
+            session_metadata=metadata,
+        ),
+        baseline_snapshot=_snapshot("fast-model"),
+        baseline_preset="fast",
+    )
+
+    assert decision.selected.preset_name == "deep"
+    assert decision.selected.run_kind == run_kind
+    assert decision.selected.task_type == "coding"
+    assert decision.selected.complexity == "high"
+    router.record_outcome(
+        decision,
+        session_metadata=metadata,
+        usage={"cached_tokens": 100},
+        stop_reason="completed",
+    )
+    assert MODEL_ROUTING_AFFINITY_KEY not in metadata
+
+
+@pytest.mark.parametrize(
+    ("marker", "expected"),
+    [
+        ("_cron_trigger", "cron"),
+        ("_local_trigger", "local_trigger"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_bound_automation_inference_routes_with_semantic_rules(
+    marker: str,
+    expected: str,
+) -> None:
+    router = _router(
+        routing=ModelRoutingConfig(
+            enabled=True,
+            classifier_preset="fast",
+            rules=[
+                ModelRouteRule(
+                    match=ModelRouteMatch(
+                        run_kind=expected,
+                        task_type="coding",
+                        complexity="high",
+                    ),
+                    preset="deep",
+                ),
+            ],
+        ),
+    )
+    session_metadata = {
+        "goal_state": {"status": "active", "objective": "keep the release moving"}
+    }
+    run_kind = infer_run_kind(
+        session_key="websocket:existing-session",
+        session_metadata=session_metadata,
+        message_metadata={marker: {"id": "automation-1"}},
+    )
+
+    decision = await router.resolve_turn_route(
+        RoutingContext(
+            user_text="refactor the release automation",
+            run_kind=run_kind,
+            session_metadata=session_metadata,
+        ),
+        baseline_snapshot=_snapshot("fast-model"),
+        baseline_preset="fast",
+    )
+
+    assert decision.selected.run_kind == expected
+    assert decision.selected.preset_name == "deep"
+    assert decision.selected.task_type == "coding"
+    assert decision.selected.complexity == "high"
+
+
 @pytest.mark.asyncio
 async def test_resolve_turn_route_selects_same_baseline_candidate() -> None:
     router = _router(
@@ -309,7 +474,7 @@ async def test_resolve_turn_route_selects_same_baseline_candidate() -> None:
         classifier_response='{"task_type":"chat","complexity":"low","reason":"hi"}',
     )
     decision = await router.resolve_turn_route(
-        RoutingContext(user_text="hello", task_kind="chat", session_metadata={}),
+        RoutingContext(user_text="hello", run_kind="chat", session_metadata={}),
         baseline_snapshot=_snapshot("fast-model"),
         baseline_preset="fast",
     )
@@ -318,25 +483,124 @@ async def test_resolve_turn_route_selects_same_baseline_candidate() -> None:
 
 
 @pytest.mark.asyncio
-async def test_subagent_task_kind_skips_classifier() -> None:
+async def test_deterministic_subagent_run_kind_skips_classifier() -> None:
     classifier_provider = _provider("classifier-model")
     classifier_provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="should not run"))
     router = _router(
         routing=ModelRoutingConfig(
             enabled=True,
             classifier_preset="fast",
-            rules=[ModelRouteRule(match=ModelRouteMatch(task_kind="subagent"), preset="deep")],
+            rules=[ModelRouteRule(match=ModelRouteMatch(run_kind="subagent"), preset="deep")],
         ),
     )
     router._refresh_classifier_snapshot = lambda: _snapshot("classifier-model", classifier_provider)  # type: ignore[method-assign]
     decision = await router.resolve_turn_route(
-        RoutingContext(user_text="background task", task_kind="subagent"),
+        RoutingContext(user_text="background task", run_kind="subagent"),
         baseline_snapshot=_snapshot("fast-model"),
         baseline_preset="fast",
     )
     classifier_provider.chat_with_retry.assert_not_called()
     assert decision.selected.preset_name == "deep"
     assert decision.reason == "deterministic_rule"
+
+
+@pytest.mark.asyncio
+async def test_irrelevant_semantic_rule_does_not_invoke_classifier() -> None:
+    classifier_provider = _provider("classifier-model")
+    classifier_provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="should not run"))
+    router = _router(
+        routing=ModelRoutingConfig(
+            enabled=True,
+            classifier_preset="fast",
+            rules=[
+                ModelRouteRule(
+                    match=ModelRouteMatch(run_kind="chat", task_type="coding"),
+                    preset="deep",
+                ),
+                ModelRouteRule(match=ModelRouteMatch(run_kind="cron"), preset="fast"),
+            ],
+        ),
+    )
+    router._refresh_classifier_snapshot = lambda: _snapshot("classifier-model", classifier_provider)  # type: ignore[method-assign]
+
+    decision = await router.resolve_turn_route(
+        RoutingContext(user_text="nightly cleanup", run_kind="cron"),
+        baseline_snapshot=_snapshot("fast-model"),
+        baseline_preset="fast",
+    )
+
+    classifier_provider.chat_with_retry.assert_not_called()
+    assert decision.selected.preset_name == "fast"
+    assert decision.reason == "deterministic_rule"
+
+
+@pytest.mark.asyncio
+async def test_known_semantic_mismatch_does_not_invoke_classifier() -> None:
+    classifier_provider = _provider("classifier-model")
+    classifier_provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="should not run"))
+    router = _router(
+        routing=ModelRoutingConfig(
+            enabled=True,
+            classifier_preset="fast",
+            rules=[
+                ModelRouteRule(
+                    match=ModelRouteMatch(
+                        run_kind="cron",
+                        task_type="coding",
+                        complexity="high",
+                    ),
+                    preset="deep",
+                ),
+                ModelRouteRule(match=ModelRouteMatch(run_kind="cron"), preset="fast"),
+            ],
+        ),
+    )
+    router._refresh_classifier_snapshot = lambda: _snapshot("classifier-model", classifier_provider)  # type: ignore[method-assign]
+
+    decision = await router.resolve_turn_route(
+        RoutingContext(
+            user_text="nightly cleanup",
+            run_kind="cron",
+            complexity="low",
+        ),
+        baseline_snapshot=_snapshot("fast-model"),
+        baseline_preset="fast",
+    )
+
+    classifier_provider.chat_with_retry.assert_not_called()
+    assert decision.selected.preset_name == "fast"
+    assert decision.reason == "deterministic_rule"
+
+
+@pytest.mark.asyncio
+async def test_dream_override_precedes_semantic_classification() -> None:
+    classifier_provider = _provider("classifier-model")
+    classifier_provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="should not run"))
+    router = _router(
+        routing=ModelRoutingConfig(
+            enabled=True,
+            classifier_preset="fast",
+            rules=[
+                ModelRouteRule(
+                    match=ModelRouteMatch(run_kind="dream", complexity="high"),
+                    preset="deep",
+                ),
+            ],
+        ),
+        dream=DreamConfig(model_override="override-model"),
+    )
+    router._refresh_classifier_snapshot = lambda: _snapshot("classifier-model", classifier_provider)  # type: ignore[method-assign]
+
+    decision = await router.resolve_turn_route(
+        RoutingContext(user_text="consolidate memory", run_kind="dream"),
+        baseline_snapshot=_snapshot("fast-model"),
+        baseline_preset="fast",
+    )
+
+    classifier_provider.chat_with_retry.assert_not_called()
+    assert decision.selected.snapshot.model == "override-model"
+    assert decision.selected.run_kind == "dream"
+    assert decision.reason == "dream_override"
 
 
 @pytest.mark.asyncio
@@ -363,7 +627,7 @@ async def test_warm_cache_keeps_current_model_when_score_is_below_threshold() ->
     decision = await router.resolve_turn_route(
         RoutingContext(
             user_text="continue",
-            task_kind="chat",
+            run_kind="chat",
             prompt_tokens_estimate=16_000,
             session_metadata=metadata,
         ),
@@ -401,7 +665,7 @@ async def test_high_benefit_switches_when_cache_is_small() -> None:
     decision = await router.resolve_turn_route(
         RoutingContext(
             user_text="large refactor",
-            task_kind="chat",
+            run_kind="chat",
             prompt_tokens_estimate=4_000,
             session_metadata=metadata,
         ),
@@ -446,7 +710,7 @@ async def test_same_cache_identity_switches_presets_without_penalty() -> None:
     decision = await router.resolve_turn_route(
         RoutingContext(
             user_text="reason more deeply",
-            task_kind="chat",
+            run_kind="chat",
             prompt_tokens_estimate=40_000,
             session_metadata=metadata,
         ),
@@ -461,7 +725,11 @@ async def test_same_cache_identity_switches_presets_without_penalty() -> None:
 @pytest.mark.asyncio
 async def test_classifier_failure_keeps_unexpired_affinity() -> None:
     router = _router(
-        routing=ModelRoutingConfig(enabled=True, classifier_preset="fast"),
+        routing=ModelRoutingConfig(
+            enabled=True,
+            classifier_preset="fast",
+            rules=[ModelRouteRule(match=ModelRouteMatch(complexity="high"), preset="deep")],
+        ),
         classifier_response="not json",
     )
     metadata = {
@@ -474,7 +742,7 @@ async def test_classifier_failure_keeps_unexpired_affinity() -> None:
         }
     }
     decision = await router.resolve_turn_route(
-        RoutingContext(user_text="continue", task_kind="chat", session_metadata=metadata),
+        RoutingContext(user_text="continue", run_kind="chat", session_metadata=metadata),
         baseline_snapshot=_snapshot("fast-model"),
         baseline_preset="fast",
     )
@@ -500,7 +768,7 @@ async def test_expired_affinity_is_removed_before_routing() -> None:
         }
     }
     decision = await router.resolve_turn_route(
-        RoutingContext(user_text="refactor", task_kind="chat", session_metadata=metadata),
+        RoutingContext(user_text="refactor", run_kind="chat", session_metadata=metadata),
         baseline_snapshot=_snapshot("fast-model"),
         baseline_preset="fast",
     )
@@ -514,7 +782,7 @@ def test_record_outcome_persists_success_and_ignores_failed_runs() -> None:
         snapshot=_snapshot("deep-model"),
         preset_name="deep",
         preset=ModelPresetConfig(model="deep-model"),
-        task_kind="chat",
+        run_kind="chat",
         task_type="coding",
         complexity="high",
         confidence=0.9,
@@ -543,7 +811,7 @@ def test_record_outcome_persists_success_and_ignores_failed_runs() -> None:
                 snapshot=_snapshot("fast-model"),
                 preset_name="fast",
                 preset=ModelPresetConfig(model="fast-model"),
-                task_kind="chat",
+                run_kind="chat",
             ),
             candidate=None,
             reason="initial_baseline",
@@ -560,7 +828,7 @@ def test_record_outcome_persists_success_and_ignores_failed_runs() -> None:
                 snapshot=_snapshot("fast-model"),
                 preset_name="fast",
                 preset=ModelPresetConfig(model="fast-model"),
-                task_kind="chat",
+                run_kind="chat",
             ),
             candidate=None,
             reason="initial_baseline",

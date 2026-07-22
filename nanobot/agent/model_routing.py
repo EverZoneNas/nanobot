@@ -1,4 +1,4 @@
-"""Cache-aware task-based model routing."""
+"""Cache-aware run-based model routing."""
 
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ from nanobot.config.schema import (
     ModelPresetConfig,
     ModelRouteRule,
     ModelRoutingConfig,
+    RunKind,
     TaskComplexity,
-    TaskKind,
     TaskType,
 )
 from nanobot.providers.factory import (
@@ -71,12 +71,12 @@ RouteDecisionReason = Literal[
 ]
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, init=False)
 class RoutingContext:
     """Inputs used to resolve a model route."""
 
     user_text: str
-    task_kind: TaskKind
+    run_kind: RunKind
     task_type: TaskType | None = None
     complexity: TaskComplexity | None = None
     confidence: float | None = None
@@ -85,18 +85,80 @@ class RoutingContext:
     message_metadata: dict[str, Any] | None = None
     session_key: str | None = None
 
+    def __init__(
+        self,
+        user_text: str,
+        run_kind: RunKind | None = None,
+        task_type: TaskType | None = None,
+        complexity: TaskComplexity | None = None,
+        confidence: float | None = None,
+        prompt_tokens_estimate: int = 0,
+        session_metadata: dict[str, Any] | None = None,
+        message_metadata: dict[str, Any] | None = None,
+        session_key: str | None = None,
+        *,
+        task_kind: RunKind | None = None,
+    ) -> None:
+        self.user_text = user_text
+        self.run_kind = _resolve_run_kind_alias(run_kind, task_kind)
+        self.task_type = task_type
+        self.complexity = complexity
+        self.confidence = confidence
+        self.prompt_tokens_estimate = prompt_tokens_estimate
+        self.session_metadata = session_metadata
+        self.message_metadata = message_metadata
+        self.session_key = session_key
 
-@dataclass(slots=True)
+    @property
+    def task_kind(self) -> RunKind:
+        """Deprecated compatibility alias for ``run_kind``."""
+        return self.run_kind
+
+    @task_kind.setter
+    def task_kind(self, value: RunKind) -> None:
+        self.run_kind = value
+
+
+@dataclass(slots=True, init=False)
 class TurnRoute:
     """Resolved model and generation settings for one agent run."""
 
     snapshot: ProviderSnapshot
     preset_name: str
     preset: ModelPresetConfig
-    task_kind: TaskKind
+    run_kind: RunKind
     task_type: TaskType | None = None
     complexity: TaskComplexity | None = None
     confidence: float | None = None
+
+    def __init__(
+        self,
+        snapshot: ProviderSnapshot,
+        preset_name: str,
+        preset: ModelPresetConfig,
+        run_kind: RunKind | None = None,
+        task_type: TaskType | None = None,
+        complexity: TaskComplexity | None = None,
+        confidence: float | None = None,
+        *,
+        task_kind: RunKind | None = None,
+    ) -> None:
+        self.snapshot = snapshot
+        self.preset_name = preset_name
+        self.preset = preset
+        self.run_kind = _resolve_run_kind_alias(run_kind, task_kind)
+        self.task_type = task_type
+        self.complexity = complexity
+        self.confidence = confidence
+
+    @property
+    def task_kind(self) -> RunKind:
+        """Deprecated compatibility alias for ``run_kind``."""
+        return self.run_kind
+
+    @task_kind.setter
+    def task_kind(self, value: RunKind) -> None:
+        self.run_kind = value
 
     def to_run_spec_kwargs(self) -> dict[str, Any]:
         return {
@@ -124,23 +186,64 @@ class RoutingDecision:
     estimated_reusable_tokens: int = 0
 
 
-def infer_task_kind(
+def _resolve_run_kind_alias(
+    run_kind: RunKind | None,
+    task_kind: RunKind | None,
+) -> RunKind:
+    if run_kind is not None and task_kind is not None and run_kind != task_kind:
+        raise ValueError("run_kind and legacy task_kind must match when both are provided")
+    resolved = run_kind if run_kind is not None else task_kind
+    if resolved is None:
+        raise TypeError("run_kind is required")
+    return resolved
+
+
+def infer_run_kind(
     *,
     session_key: str | None,
     session_metadata: dict[str, Any] | None,
     message_metadata: dict[str, Any] | None,
-    explicit_task_kind: TaskKind | None = None,
-) -> TaskKind:
-    if explicit_task_kind is not None:
-        return explicit_task_kind
+    explicit_run_kind: RunKind | None = None,
+    explicit_task_kind: RunKind | None = None,
+) -> RunKind:
+    explicit = _resolve_optional_run_kind_alias(explicit_run_kind, explicit_task_kind)
+    if explicit is not None:
+        return explicit
     key = (session_key or "").strip()
     if key.startswith("dream:"):
         return "dream"
     if key == "heartbeat" or key.startswith("cron:"):
         return "cron"
+    # Session-bound automations reuse their origin session key, so their
+    # structured inbound marker is the only reliable invocation identity.
+    # Validate the same marker shape as the source helpers without importing
+    # those modules into the agent/config routing layer.
+    if _has_automation_trigger(message_metadata, "_cron_trigger"):
+        return "cron"
+    if _has_automation_trigger(message_metadata, "_local_trigger"):
+        return "local_trigger"
     if sustained_goal_turn(session_metadata, message_metadata=message_metadata):
         return "sustained_goal"
     return "chat"
+
+
+def _has_automation_trigger(metadata: dict[str, Any] | None, key: str) -> bool:
+    return isinstance(metadata, dict) and isinstance(metadata.get(key), dict)
+
+
+def _resolve_optional_run_kind_alias(
+    run_kind: RunKind | None,
+    task_kind: RunKind | None,
+) -> RunKind | None:
+    if run_kind is not None and task_kind is not None and run_kind != task_kind:
+        raise ValueError(
+            "explicit_run_kind and legacy explicit_task_kind must match when both are provided"
+        )
+    return run_kind if run_kind is not None else task_kind
+
+
+# Deprecated compatibility alias. Runtime callers migrate in a later phase.
+infer_task_kind = infer_run_kind
 
 
 def extract_user_text(initial_messages: list[dict[str, Any]]) -> str:
@@ -209,7 +312,7 @@ def _parse_classifier_response(
 
 def _rule_matches(ctx: RoutingContext, rule: ModelRouteRule) -> bool:
     match = rule.match
-    if match.task_kind is not None and ctx.task_kind != match.task_kind:
+    if match.run_kind is not None and ctx.run_kind != match.run_kind:
         return False
     if match.task_type is not None and ctx.task_type != match.task_type:
         return False
@@ -270,7 +373,7 @@ class ModelRouter:
             snapshot=snapshot,
             preset_name=name,
             preset=preset,
-            task_kind=ctx.task_kind,
+            run_kind=ctx.run_kind,
             task_type=ctx.task_type,
             complexity=ctx.complexity,
             confidence=ctx.confidence,
@@ -287,7 +390,7 @@ class ModelRouter:
             snapshot=baseline_snapshot,
             preset_name=name,
             preset=self._resolve_preset(name),
-            task_kind=ctx.task_kind,
+            run_kind=ctx.run_kind,
             task_type=ctx.task_type,
             complexity=ctx.complexity,
             confidence=ctx.confidence,
@@ -304,6 +407,32 @@ class ModelRouter:
             if _rule_matches(ctx, rule):
                 return rule.preset
         return self._routing.default_preset
+
+    def _classification_required(self, ctx: RoutingContext) -> bool:
+        """Return whether an earlier potentially matching rule needs unknown semantics."""
+        for rule in self._routing.rules:
+            match = rule.match
+            if match.run_kind is not None and match.run_kind != ctx.run_kind:
+                continue
+            if (
+                match.task_type is not None
+                and ctx.task_type is not None
+                and match.task_type != ctx.task_type
+            ):
+                continue
+            if (
+                match.complexity is not None
+                and ctx.complexity is not None
+                and match.complexity != ctx.complexity
+            ):
+                continue
+            if (match.task_type is not None and ctx.task_type is None) or (
+                match.complexity is not None and ctx.complexity is None
+            ):
+                return True
+            # The first rule still eligible from known fields already selects the route.
+            return False
+        return False
 
     async def _classify(
         self,
@@ -379,18 +508,22 @@ class ModelRouter:
     ) -> RoutingDecision:
         baseline = self._baseline_route(ctx, baseline_snapshot, baseline_preset)
 
-        if ctx.task_kind == "dream":
+        if ctx.run_kind == "dream":
             override_snapshot = self._dream_override_snapshot()
             if override_snapshot is not None:
                 route = TurnRoute(
                     snapshot=override_snapshot,
                     preset_name="dream:override",
                     preset=ModelPresetConfig(model=override_snapshot.model, provider="auto"),
-                    task_kind=ctx.task_kind,
+                    run_kind=ctx.run_kind,
+                    task_type=ctx.task_type,
+                    complexity=ctx.complexity,
+                    confidence=ctx.confidence,
                 )
                 return RoutingDecision(route, route, "dream_override")
 
-        if ctx.task_kind != "chat":
+        classification_required = self._classification_required(ctx)
+        if not classification_required:
             preset_name = self._match_rule(ctx)
             if preset_name is None:
                 return RoutingDecision(baseline, None, "no_candidate_baseline")
@@ -398,12 +531,23 @@ class ModelRouter:
             return RoutingDecision(candidate, candidate, "deterministic_rule")
 
         task_type, complexity, confidence = await self._classify(ctx.user_text)
-        ctx.task_type = task_type
-        ctx.complexity = complexity
+        if ctx.task_type is None:
+            ctx.task_type = task_type
+        if ctx.complexity is None:
+            ctx.complexity = complexity
         ctx.confidence = confidence
+        baseline = self._baseline_route(ctx, baseline_snapshot, baseline_preset)
+
+        if ctx.run_kind != "chat":
+            preset_name = self._match_rule(ctx)
+            if preset_name is None:
+                return RoutingDecision(baseline, None, "no_candidate_baseline")
+            candidate = self._route_for_preset(preset_name, ctx)
+            return RoutingDecision(candidate, candidate, "deterministic_rule")
+
         affinity = self._load_affinity(ctx)
 
-        if task_type is None or complexity is None:
+        if ctx.task_type is None or ctx.complexity is None:
             if affinity is not None:
                 return RoutingDecision(
                     affinity[0],
@@ -474,8 +618,8 @@ class ModelRouter:
             max(0, ctx.prompt_tokens_estimate),
             max(previous_prompt, cached_tokens),
         )
-        resolved_confidence = confidence if confidence is not None else 0.5
-        quality_benefit = resolved_confidence * _COMPLEXITY_BENEFIT[complexity]
+        resolved_confidence = ctx.confidence if ctx.confidence is not None else 0.5
+        quality_benefit = resolved_confidence * _COMPLEXITY_BENEFIT[ctx.complexity]
         cache_penalty = self._routing.cache_weight * min(
             reusable_tokens / self._routing.warm_prefix_tokens,
             1.0,
@@ -507,7 +651,7 @@ class ModelRouter:
         """Persist cache affinity after a successful normal chat run."""
         route = decision.selected
         if (
-            route.task_kind != "chat"
+            route.run_kind != "chat"
             or not isinstance(session_metadata, dict)
             or stop_reason in {"error", "tool_error", "empty_final_response"}
         ):

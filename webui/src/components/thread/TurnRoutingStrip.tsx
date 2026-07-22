@@ -73,10 +73,11 @@ export function TurnRoutingStrip({
       defaultValue: "model {{model}}",
     }),
   ].filter(Boolean);
+  const runKind = info.runKind ?? info.taskKind;
   const classifierParts = [
-    info.taskKind
+    runKind
       ? t("thread.composer.routingKind", {
-          kind: info.taskKind,
+          kind: runKind,
           defaultValue: "kind {{kind}}",
         })
       : null,

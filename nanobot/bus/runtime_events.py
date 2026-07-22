@@ -77,7 +77,7 @@ class TurnModelRouted:
     context: RuntimeEventContext
     model: str
     model_preset: str | None
-    task_kind: str
+    run_kind: str
     task_type: str | None = None
     complexity: str | None = None
     candidate_model: str | None = None
@@ -261,7 +261,7 @@ class RuntimeEventPublisher:
         *,
         model: str,
         model_preset: str | None,
-        task_kind: str,
+        run_kind: str,
         task_type: str | None,
         complexity: str | None,
         channel: str,
@@ -286,7 +286,7 @@ class RuntimeEventPublisher:
                 ),
                 model=model,
                 model_preset=model_preset,
-                task_kind=task_kind,
+                run_kind=run_kind,
                 task_type=task_type,
                 complexity=complexity,
                 candidate_model=candidate_model,

@@ -28,7 +28,7 @@ from nanobot.agent.model_routing import (
     RoutingContext,
     RoutingDecision,
     extract_user_text,
-    infer_task_kind,
+    infer_run_kind,
 )
 from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
 from nanobot.agent.subagent import SubagentManager
@@ -934,7 +934,7 @@ class AgentLoop:
             )
             routing_ctx = RoutingContext(
                 user_text=extract_user_text(initial_messages),
-                task_kind=infer_task_kind(
+                run_kind=infer_run_kind(
                     session_key=active_session_key,
                     session_metadata=session_metadata,
                     message_metadata=metadata,
@@ -961,13 +961,13 @@ class AgentLoop:
             route_spec_kwargs = route.to_run_spec_kwargs()
             logger.info(
                 "Model route decision: reason={} selected={} model={} candidate={} "
-                "task_kind={} task_type={} complexity={} score={} cache_penalty={} "
+                "run_kind={} task_type={} complexity={} score={} cache_penalty={} "
                 "reusable_tokens={}",
                 routing_decision.reason,
                 route.preset_name,
                 route.snapshot.model,
                 candidate.preset_name if candidate is not None else None,
-                route.task_kind,
+                route.run_kind,
                 route.task_type,
                 route.complexity,
                 routing_decision.switch_score,
@@ -977,7 +977,7 @@ class AgentLoop:
             self._runtime_events().turn_model_routed(
                 model=route.snapshot.model,
                 model_preset=route.preset_name,
-                task_kind=route.task_kind,
+                run_kind=route.run_kind,
                 task_type=route.task_type,
                 complexity=route.complexity,
                 candidate_model=candidate.snapshot.model if candidate is not None else None,

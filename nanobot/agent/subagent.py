@@ -11,7 +11,7 @@ from typing import Any, Callable
 from loguru import logger
 
 from nanobot.agent.hook import AgentHook, AgentHookContext
-from nanobot.agent.model_routing import ModelRouter, RoutingContext, infer_task_kind
+from nanobot.agent.model_routing import ModelRouter, RoutingContext, infer_run_kind
 from nanobot.agent.runner import AgentRunner, AgentRunSpec
 from nanobot.agent.tools.context import ToolContext
 from nanobot.agent.tools.file_state import FileStates
@@ -261,11 +261,11 @@ class SubagentManager:
                 decision = await self._model_router.resolve_turn_route(
                     RoutingContext(
                         user_text=task,
-                        task_kind=infer_task_kind(
+                        run_kind=infer_run_kind(
                             session_key=sess_key,
                             session_metadata=None,
                             message_metadata=None,
-                            explicit_task_kind="subagent",
+                            explicit_run_kind="subagent",
                         ),
                         session_key=sess_key,
                     ),

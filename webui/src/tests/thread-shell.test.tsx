@@ -334,7 +334,7 @@ describe("ThreadShell", () => {
         turnId,
         modelName: "claude-opus-4-5",
         modelPreset: "deep",
-        taskKind: "chat",
+        runKind: "chat",
         taskType: "coding",
         complexity: "high",
         ephemeral: true,
@@ -432,7 +432,7 @@ describe("ThreadShell", () => {
       client._emitTurnRouting("smart-routing-live", {
         modelName: "deepseek/deepseek-v4-flash",
         modelPreset: "openrouter-fast",
-        taskKind: "chat",
+        runKind: "chat",
         taskType: "research",
         complexity: "low",
         ephemeral: true,

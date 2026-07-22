@@ -894,6 +894,7 @@ async def test_send_delivers_cache_aware_route_decision() -> None:
         event=TurnModelRoutedEvent(
             model="openai/gpt-4.1-mini",
             model_preset="fast",
+            run_kind="chat",
             candidate_model="anthropic/claude-opus-4-5",
             candidate_model_preset="deep",
             decision_reason="kept_for_cache",
@@ -909,6 +910,8 @@ async def test_send_delivers_cache_aware_route_decision() -> None:
     assert payload["event"] == "turn_model_routed"
     assert payload["turn_id"] == "turn-route-test"
     assert payload["model_preset"] == "fast"
+    assert payload["run_kind"] == "chat"
+    assert "task_kind" not in payload
     assert payload["candidate_model_preset"] == "deep"
     assert payload["decision_reason"] == "kept_for_cache"
     assert payload["switch_score"] == 0.05

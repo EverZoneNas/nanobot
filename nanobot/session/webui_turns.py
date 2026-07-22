@@ -363,7 +363,7 @@ class WebuiTurnCoordinator:
                 event=TurnModelRoutedEvent(
                     model=event.model,
                     model_preset=event.model_preset,
-                    task_kind=event.task_kind,
+                    run_kind=event.run_kind,
                     task_type=event.task_type,
                     complexity=event.complexity,
                     candidate_model=event.candidate_model,

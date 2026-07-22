@@ -511,7 +511,7 @@ export class NanobotClient {
         modelName: parsed.model_name,
         modelPreset: parsed.model_preset ?? null,
         ...(parsed.turn_id ? { turnId: parsed.turn_id } : {}),
-        taskKind: parsed.task_kind,
+        runKind: parsed.run_kind ?? parsed.task_kind,
         taskType: parsed.task_type ?? null,
         complexity: parsed.complexity ?? null,
         ...(parsed.candidate_model_name !== undefined

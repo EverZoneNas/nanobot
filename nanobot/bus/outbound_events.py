@@ -85,7 +85,7 @@ class RuntimeModelUpdatedEvent(OutboundEvent):
 class TurnModelRoutedEvent(OutboundEvent):
     model: str
     model_preset: str | None = None
-    task_kind: str = "chat"
+    run_kind: str = "chat"
     task_type: str | None = None
     complexity: str | None = None
     candidate_model: str | None = None

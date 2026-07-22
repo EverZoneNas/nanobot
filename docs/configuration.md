@@ -1383,14 +1383,14 @@ Set `agents.defaults.modelPreset` to choose the startup preset. When `modelPrese
 
 ### Model Routing
 
-`agents.defaults.smartModelRouting` enables cache-aware model selection based on task kind, task type, and complexity. Routing is **ephemeral**: it affects only the current turn (or subagent run) and does not change the global `/model` default. For normal chat sessions, nanobot keeps short-lived model affinity so a marginal route change does not discard a warm provider prompt cache.
+`agents.defaults.smartModelRouting` enables cache-aware model selection based on run kind, task type, and complexity. Routing is **ephemeral**: it affects only the current run and does not change the global `/model` default. For normal chat sessions, nanobot keeps short-lived model affinity so a marginal route change does not discard a warm provider prompt cache.
 
 When enabled, nanobot:
 
-1. Uses deterministic rules for known contexts (`subagent`, `cron`, `dream`, `sustained_goal`).
-2. Runs a fast classifier model for every normal chat turn to estimate `task_type`, `complexity`, and confidence.
+1. Infers the run kind (`chat`, `subagent`, `cron`, `local_trigger`, `dream`, or `sustained_goal`) from the runtime context.
+2. Runs the classifier only when an ordered rule that could match that run kind needs an unknown `taskType` or `complexity`. This applies to every run kind, not only chat.
 3. Resolves the first matching rule as the candidate route.
-4. Switches models only when the candidate's estimated quality benefit outweighs the current route's prompt-cache penalty. Presets resolving to the same provider endpoint and model switch without a cache penalty.
+4. For chat runs, switches models only when the candidate's estimated quality benefit outweighs the current route's prompt-cache penalty. Non-chat runs select the first matching candidate directly and do not persist cache affinity. Presets resolving to the same provider endpoint and model switch without a cache penalty.
 
 ```json
 {
@@ -1420,10 +1420,11 @@ When enabled, nanobot:
         "switchThreshold": 0.15,
         "warmPrefixTokens": 16000,
         "rules": [
-          { "match": { "taskKind": "subagent" }, "preset": "deep" },
-          { "match": { "taskKind": "sustained_goal" }, "preset": "deep" },
-          { "match": { "taskKind": "cron" }, "preset": "fast" },
-          { "match": { "taskKind": "dream" }, "preset": "fast" },
+          { "match": { "runKind": "subagent", "taskType": "coding", "complexity": "high" }, "preset": "deep" },
+          { "match": { "runKind": "sustained_goal", "complexity": "high" }, "preset": "deep" },
+          { "match": { "runKind": "cron" }, "preset": "fast" },
+          { "match": { "runKind": "local_trigger" }, "preset": "fast" },
+          { "match": { "runKind": "dream" }, "preset": "fast" },
           { "match": { "taskType": "coding", "complexity": "high" }, "preset": "deep" },
           { "match": { "complexity": "low" }, "preset": "fast" }
         ]
@@ -1439,7 +1440,7 @@ When enabled, nanobot:
 | Field | Description |
 |-------|-------------|
 | `enabled` | Turn routing on or off. Default `false`. |
-| `classifierPreset` | Preset used for the lightweight chat-turn classifier. Must exist in `modelPresets` when routing is enabled. |
+| `classifierPreset` | Preset used for lightweight semantic classification when an eligible rule requires it. Must exist in `modelPresets` when routing is enabled. |
 | `rules` | Ordered list of match rules. First match wins; put more specific rules first. |
 | `defaultPreset` | Optional fallback preset when the classifier fails or no rule matches. |
 | `affinityTtlSeconds` | Seconds of inactivity before the current chat route and cache observations expire. Default `300`. |
@@ -1451,11 +1452,15 @@ Rule `match` fields (all optional except that at least one should be set per rul
 
 | Match field | Values |
 |-------------|--------|
-| `taskKind` | `subagent`, `cron`, `dream`, `sustained_goal`, `chat` |
-| `taskType` | `coding`, `research`, `admin`, `chat`, `other` (from classifier on chat turns) |
-| `complexity` | `low`, `medium`, `high` (from classifier on chat turns) |
+| `runKind` | `subagent`, `cron`, `local_trigger`, `dream`, `sustained_goal`, `chat` |
+| `taskType` | `coding`, `research`, `admin`, `chat`, `other` (from the classifier when required) |
+| `complexity` | `low`, `medium`, `high` (from the classifier when required) |
 
-`agents.defaults.dream.modelOverride` still applies for Dream runs when set; it takes precedence over routing rules for `taskKind: dream`.
+`taskKind` (and snake-case `task_kind`) is a deprecated read-only compatibility alias for `runKind`; new configurations and serialized output use `runKind`. Rules containing only known fields, such as `runKind: cron`, stay on the deterministic fast path and do not invoke the classifier. A semantic rule such as `runKind: subagent` plus `taskType: coding` can invoke classification for a subagent run when its task type is not already known.
+
+The system-managed heartbeat and user-created cron jobs both have `runKind: cron` because both are scheduler invocations. Heartbeat keeps its dedicated `heartbeat` session and notification policy, while a session-bound user cron is identified by its structured `_cron_trigger` message metadata. A local trigger is similarly identified by `_local_trigger` metadata and has `runKind: local_trigger`. Explicit run kinds and Dream/heartbeat session identities remain authoritative; otherwise automation metadata takes precedence over active sustained-goal state, so an automated turn in a goal-bearing session routes as `cron` or `local_trigger`.
+
+`agents.defaults.dream.modelOverride` still applies for Dream runs when set; it takes precedence over routing rules for `runKind: dream`.
 
 For cross-model chat candidates, nanobot calculates:
 
