@@ -34,16 +34,6 @@ if [[ "$NANOBOT_WS_TOKEN_SECRET" == REPLACE_WITH_YOUR_* ]]; then
   exit 1
 fi
 
-if ! command -v bun >/dev/null 2>&1; then
-  echo "error: bun not found (required to build webui)" >&2
-  exit 1
-fi
-
-if [[ ! -d "$WEBUI" ]]; then
-  echo "error: webui directory not found at $WEBUI" >&2
-  exit 1
-fi
-
 gateway_cmd() {
   "$NANOBOT" gateway "$@" -c "$CONFIG"
 }
@@ -53,24 +43,37 @@ gateway_running() {
 }
 
 RESTART=false
+REBUILD_WEBUI=false
 for arg in "$@"; do
   case "$arg" in
     --restart) RESTART=true ;;
+    --rebuild-webui) REBUILD_WEBUI=true ;;
     -h|--help)
-      echo "Usage: $0 [--restart]"
-      echo "  --restart  stop and restart the gateway if it is already running"
+      echo "Usage: $0 [--restart] [--rebuild-webui]"
+      echo "  --restart        stop and restart the gateway if it is already running"
+      echo "  --rebuild-webui  rebuild the WebUI with bun before starting"
       exit 0
       ;;
     *)
       echo "error: unknown argument: $arg" >&2
-      echo "Usage: $0 [--restart]" >&2
+      echo "Usage: $0 [--restart] [--rebuild-webui]" >&2
       exit 1
       ;;
   esac
 done
 
-echo "==> building webui"
-(cd "$WEBUI" && bun run build)
+if [[ "$REBUILD_WEBUI" == true ]]; then
+  if ! command -v bun >/dev/null 2>&1; then
+    echo "error: bun not found (required to build webui)" >&2
+    exit 1
+  fi
+  if [[ ! -d "$WEBUI" ]]; then
+    echo "error: webui directory not found at $WEBUI" >&2
+    exit 1
+  fi
+  echo "==> building webui"
+  (cd "$WEBUI" && bun run build)
+fi
 
 echo ""
 echo "==> nanobot gateway"
