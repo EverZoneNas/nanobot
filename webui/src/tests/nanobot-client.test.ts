@@ -269,6 +269,68 @@ describe("NanobotClient", () => {
     expect(lateHandler).toHaveBeenCalledWith("chat-status", null);
   });
 
+  it("records turn routing info and notifies subscribers with classifier details", () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    const handler = vi.fn();
+    client.onTurnModelRouted(handler);
+    client.connect();
+    lastSocket().fakeOpen();
+    lastSocket().fakeMessage({
+      event: "turn_model_routed",
+      chat_id: "chat-route",
+      model_name: "claude-opus-4-5",
+      model_preset: "deep",
+      run_kind: "chat",
+      task_type: "coding",
+      complexity: "high",
+      ephemeral: true,
+    });
+
+    expect(client.getTurnRoutingInfo("chat-route")).toEqual({
+      modelName: "claude-opus-4-5",
+      modelPreset: "deep",
+      runKind: "chat",
+      taskType: "coding",
+      complexity: "high",
+      ephemeral: true,
+    });
+    expect(handler).toHaveBeenCalledWith("chat-route", {
+      modelName: "claude-opus-4-5",
+      modelPreset: "deep",
+      runKind: "chat",
+      taskType: "coding",
+      complexity: "high",
+      ephemeral: true,
+    });
+  });
+
+  it("reads legacy task_kind routing events as runKind", () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    client.connect();
+    lastSocket().fakeOpen();
+    lastSocket().fakeMessage({
+      event: "turn_model_routed",
+      chat_id: "chat-route-legacy",
+      model_name: "gpt-4.1-mini",
+      model_preset: "fast",
+      task_kind: "cron",
+    });
+
+    expect(client.getTurnRoutingInfo("chat-route-legacy")).toMatchObject({
+      modelName: "gpt-4.1-mini",
+      modelPreset: "fast",
+      runKind: "cron",
+    });
+  });
+
   it("records goal_state per chat_id without an onChat subscriber", () => {
     const client = new NanobotClient({
       url: "ws://test",
@@ -355,6 +417,44 @@ describe("NanobotClient", () => {
     });
 
     expect(handler).toHaveBeenCalledWith("openai/gpt-4.1", "fast");
+  });
+
+  it("dispatches structured cache-aware route decisions", () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    const handler = vi.fn();
+    client.onTurnModelRouted(handler);
+    client.connect();
+    lastSocket().fakeOpen();
+
+    lastSocket().fakeMessage({
+      event: "turn_model_routed",
+      chat_id: "chat-route",
+      model_name: "openai/gpt-4.1-mini",
+      model_preset: "fast",
+      candidate_model_name: "anthropic/claude-opus-4-5",
+      candidate_model_preset: "deep",
+      decision_reason: "kept_for_cache",
+      switch_score: 0.05,
+      cache_penalty: 0.65,
+      estimated_reusable_tokens: 16000,
+    });
+
+    expect(handler).toHaveBeenCalledWith(
+      "chat-route",
+      expect.objectContaining({
+        modelName: "openai/gpt-4.1-mini",
+        candidateModelPreset: "deep",
+        decisionReason: "kept_for_cache",
+        estimatedReusableTokens: 16000,
+      }),
+    );
+
+    lastSocket().fakeMessage({ event: "turn_end", chat_id: "chat-route" });
+    expect(client.getTurnRoutingInfo("chat-route")).toBeUndefined();
   });
 
   it("dispatches session updates globally", () => {

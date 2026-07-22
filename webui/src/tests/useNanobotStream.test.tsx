@@ -3,7 +3,11 @@ import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { useNanobotStream } from "@/hooks/useNanobotStream";
-import type { InboundEvent, GoalStateWsPayload } from "@/lib/types";
+import type {
+  GoalStateWsPayload,
+  InboundEvent,
+  TurnRoutingInfo,
+} from "@/lib/types";
 import { ClientProvider } from "@/providers/ClientProvider";
 
 const EMPTY_MESSAGES: import("@/lib/types").UIMessage[] = [];
@@ -12,10 +16,14 @@ function fakeClient() {
   const handlers = new Map<string, Set<(ev: InboundEvent) => void>>();
   const runStartedAtByChatId = new Map<string, number>();
   const goalStateByChatId = new Map<string, GoalStateWsPayload>();
+  const turnRoutingByChatId = new Map<string, TurnRoutingInfo>();
+  const turnRoutingHandlers =
+    new Set<(chatId: string, routing: TurnRoutingInfo) => void>();
 
   function recordGoalStatusForRunStrip(chatId: string, ev: InboundEvent) {
     if (ev.event === "turn_end") {
       runStartedAtByChatId.delete(chatId);
+      turnRoutingByChatId.delete(chatId);
       return;
     }
     if (ev.event !== "goal_status") return;
@@ -49,6 +57,13 @@ function fakeClient() {
       getGoalState(chatId: string) {
         return goalStateByChatId.get(chatId);
       },
+      getTurnRoutingInfo(chatId: string) {
+        return turnRoutingByChatId.get(chatId);
+      },
+      onTurnModelRouted(handler: (chatId: string, routing: TurnRoutingInfo) => void) {
+        turnRoutingHandlers.add(handler);
+        return () => turnRoutingHandlers.delete(handler);
+      },
       onChat(chatId: string, h: (ev: InboundEvent) => void) {
         let set = handlers.get(chatId);
         if (!set) {
@@ -65,6 +80,10 @@ function fakeClient() {
       connect: vi.fn(),
       close: vi.fn(),
       updateUrl: vi.fn(),
+    },
+    emitTurnRouting(chatId: string, routing: TurnRoutingInfo) {
+      turnRoutingByChatId.set(chatId, routing);
+      turnRoutingHandlers.forEach((handler) => handler(chatId, routing));
     },
     emit(chatId: string, ev: InboundEvent) {
       recordGoalStatusForRunStrip(chatId, ev);
@@ -97,6 +116,34 @@ async function flushStreamFrame() {
 }
 
 describe("useNanobotStream", () => {
+  it("tracks cache-aware routing for the active turn and clears it on turn_end", () => {
+    const fake = fakeClient();
+    const { result } = renderHook(
+      () => useNanobotStream("chat-route", EMPTY_MESSAGES),
+      { wrapper: wrap(fake.client) },
+    );
+
+    act(() => {
+      fake.emitTurnRouting("chat-route", {
+        modelName: "openai/gpt-4.1-mini",
+        modelPreset: "fast",
+        candidateModelPreset: "deep",
+        decisionReason: "kept_for_cache",
+        estimatedReusableTokens: 16_000,
+      });
+    });
+    expect(result.current.turnRoutingInfo).toMatchObject({
+      modelPreset: "fast",
+      decisionReason: "kept_for_cache",
+    });
+
+    act(() => {
+      fake.emit("chat-route", { event: "turn_end", chat_id: "chat-route" });
+    });
+    expect(result.current.turnRoutingInfo).toBeNull();
+    expect(result.current.turnRoutedModel).toBeNull();
+  });
+
   it("batches answer deltas into one animation-frame update", async () => {
     const fake = fakeClient();
     const requestFrame = vi.spyOn(window, "requestAnimationFrame");
@@ -243,6 +290,92 @@ describe("useNanobotStream", () => {
     expect(result.current.messages[0]).toMatchObject({
       role: "assistant",
       content: "fresh",
+    });
+  });
+
+  it("persists latest turn routing info for the active chat", () => {
+    const fake = fakeClient();
+    fake.emitTurnRouting("chat-route", {
+      modelName: "claude-opus-4-5",
+      modelPreset: "deep",
+      runKind: "chat",
+      taskType: "coding",
+      complexity: "high",
+      ephemeral: true,
+    });
+
+    const { result } = renderHook(() => useNanobotStream("chat-route", EMPTY_MESSAGES), {
+      wrapper: wrap(fake.client),
+    });
+
+    expect(result.current.turnRoutedModel).toBe("claude-opus-4-5");
+    expect(result.current.turnRoutingInfo).toEqual({
+      modelName: "claude-opus-4-5",
+      modelPreset: "deep",
+      runKind: "chat",
+      taskType: "coding",
+      complexity: "high",
+      ephemeral: true,
+    });
+
+    act(() => {
+      fake.emitTurnRouting("chat-route", {
+        modelName: "gpt-5.6",
+        modelPreset: "fast",
+        runKind: "chat",
+        taskType: "research",
+        complexity: "low",
+        ephemeral: true,
+      });
+    });
+
+    expect(result.current.turnRoutedModel).toBe("gpt-5.6");
+    expect(result.current.turnRoutingInfo?.taskType).toBe("research");
+    expect(result.current.turnRoutingInfo?.complexity).toBe("low");
+  });
+
+  it("stamps model routing onto the assistant message for the turn", async () => {
+    const fake = fakeClient();
+    const turnId = "turn-route-stamp";
+    const { result } = renderHook(() => useNanobotStream("chat-route-stamp", EMPTY_MESSAGES), {
+      wrapper: wrap(fake.client),
+    });
+
+    act(() => {
+      fake.emitTurnRouting("chat-route-stamp", {
+        turnId,
+        modelName: "claude-opus-4-5",
+        modelPreset: "deep",
+        runKind: "chat",
+        taskType: "coding",
+        complexity: "high",
+        ephemeral: true,
+      });
+      fake.emit("chat-route-stamp", {
+        event: "delta",
+        chat_id: "chat-route-stamp",
+        text: "Routed answer",
+        turn_id: turnId,
+        turn_phase: "answer",
+        turn_seq: 2,
+      });
+    });
+    await flushStreamFrame();
+
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.messages[0]).toMatchObject({
+      role: "assistant",
+      content: "Routed answer",
+      turnId,
+      modelRouting: {
+        turnId,
+        modelName: "claude-opus-4-5",
+        modelPreset: "deep",
+        runKind: "chat",
+        taskType: "coding",
+        complexity: "high",
+        ephemeral: true,
+      },
     });
   });
 

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator
 from loguru import logger
 
 from nanobot.session.manager import Session
+from nanobot.session.routing_state import clear_model_routing_affinity
 from nanobot.utils.gitstore import GitStore
 from nanobot.utils.helpers import (
     ensure_dir,
@@ -870,6 +871,7 @@ class Consolidator:
         )
         summary = await self.archive(chunk, session_key=session.key)
         session.last_consolidated = end_idx
+        clear_model_routing_affinity(session.metadata)
         self.sessions.save(session)
         return summary
 
@@ -879,6 +881,7 @@ class Consolidator:
                 "text": summary,
                 "last_active": session.updated_at.isoformat(),
             }
+            clear_model_routing_affinity(session.metadata)
             self.sessions.save(session)
 
     def estimate_session_prompt_tokens(
@@ -1060,6 +1063,7 @@ class Consolidator:
                 if summary:
                     last_summary = summary
                 session.last_consolidated = end_idx
+                clear_model_routing_affinity(session.metadata)
                 self.sessions.save(session)
                 if not summary:
                     # LLM is degraded — stop hammering it this call;
@@ -1138,6 +1142,8 @@ class Consolidator:
 
             session.messages = messages_to_keep
             session.last_consolidated = 0
+            if messages_to_remove:
+                clear_model_routing_affinity(session.metadata)
             self.sessions.save(session)
 
             if messages_to_remove:

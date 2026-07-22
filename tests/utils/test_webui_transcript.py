@@ -1380,3 +1380,66 @@ def test_build_response_schema(monkeypatch, tmp_path) -> None:
     assert out["schemaVersion"] == WEBUI_TRANSCRIPT_SCHEMA_VERSION
     assert out["sessionKey"] == key
     assert len(out["messages"]) == 1
+
+
+def test_replay_turn_model_routed_attaches_canonical_model_routing_to_assistant() -> None:
+    turn_id = "turn-route-1"
+    msgs = replay_transcript_to_ui_messages([
+        {"event": "user", "chat_id": "t-route", "text": "hi", "turn_id": turn_id, "turn_phase": "user", "turn_seq": 1},
+        {
+            "event": "turn_model_routed",
+            "chat_id": "t-route",
+            "model_name": "claude-opus-4-5",
+            "model_preset": "deep",
+            "run_kind": "chat",
+            "task_type": "coding",
+            "complexity": "high",
+            "decision_reason": "switched_score",
+            "turn_id": turn_id,
+            "turn_phase": "answer",
+            "turn_seq": 2,
+        },
+        {"event": "delta", "chat_id": "t-route", "text": "Hello", "turn_id": turn_id, "turn_phase": "answer", "turn_seq": 3},
+        {"event": "turn_end", "chat_id": "t-route", "latency_ms": 120, "turn_id": turn_id, "turn_phase": "complete", "turn_seq": 4},
+    ])
+
+    assert len(msgs) == 2
+    assert msgs[1]["role"] == "assistant"
+    assert msgs[1]["content"] == "Hello"
+    assert msgs[1]["modelRouting"] == {
+        "modelName": "claude-opus-4-5",
+        "modelPreset": "deep",
+        "runKind": "chat",
+        "taskType": "coding",
+        "complexity": "high",
+        "decisionReason": "switched_score",
+        "turnId": turn_id,
+    }
+    assert msgs[1]["latencyMs"] == 120
+
+
+def test_replay_turn_model_routed_reads_legacy_task_kind() -> None:
+    turn_id = "turn-route-legacy"
+    msgs = replay_transcript_to_ui_messages([
+        {
+            "event": "turn_model_routed",
+            "chat_id": "t-route-legacy",
+            "model_name": "gpt-4.1-mini",
+            "model_preset": "fast",
+            "task_kind": "cron",
+            "turn_id": turn_id,
+        },
+        {
+            "event": "message",
+            "chat_id": "t-route-legacy",
+            "text": "Legacy route restored",
+            "turn_id": turn_id,
+        },
+    ])
+
+    assert msgs[0]["modelRouting"] == {
+        "modelName": "gpt-4.1-mini",
+        "modelPreset": "fast",
+        "runKind": "cron",
+        "turnId": turn_id,
+    }

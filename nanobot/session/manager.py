@@ -15,6 +15,10 @@ from typing import Any
 from loguru import logger
 
 from nanobot.config.paths import get_legacy_sessions_dir
+from nanobot.session.routing_state import (
+    MODEL_ROUTING_AFFINITY_KEY,
+    clear_model_routing_affinity,
+)
 from nanobot.utils.helpers import (
     ensure_dir,
     estimate_message_tokens,
@@ -42,6 +46,7 @@ _FORK_VOLATILE_METADATA_KEYS = {
     "thread_goal",
     "title",
     "title_user_edited",
+    MODEL_ROUTING_AFFINITY_KEY,
 }
 
 
@@ -289,6 +294,7 @@ class Session:
         self.last_consolidated = 0
         self.updated_at = datetime.now()
         self.metadata.pop("_last_summary", None)
+        clear_model_routing_affinity(self.metadata)
 
     def retain_recent_legal_suffix(
         self,

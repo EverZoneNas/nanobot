@@ -1,6 +1,7 @@
 """Configuration schema using Pydantic."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -63,7 +64,7 @@ class DreamConfig(Base):
     model_override: str | None = Field(
         default=None,
         validation_alias=AliasChoices("modelOverride", "model", "model_override"),
-    )  # Override model for Dream sessions (pending implementation)
+    )  # Override model for Dream sessions when model routing is enabled
     max_batch_size: int = Field(default=20, ge=1)  # Deprecated: no longer used
     max_iterations: int = Field(default=15, ge=1)  # Deprecated: no longer used
     annotate_line_ages: bool = True  # Deprecated: no longer used
@@ -116,6 +117,159 @@ class ModelPresetConfig(Base):
         )
 
 
+RunKind = Literal[
+    "subagent",
+    "cron",
+    "local_trigger",
+    "dream",
+    "sustained_goal",
+    "chat",
+]
+
+
+class TaskTypeDefinition(Base):
+    """Classifier-facing definition of a model-routing task type."""
+
+    description: str
+
+    @field_validator("description")
+    @classmethod
+    def _validate_description(cls, value: str) -> str:
+        description = value.strip()
+        if not description:
+            raise ValueError("task type description must not be empty")
+        return description
+
+
+BUILTIN_TASK_TYPE_DEFINITIONS: dict[str, TaskTypeDefinition] = {
+    "chat": TaskTypeDefinition(description="simple Q&A, greetings, short explanations"),
+    "admin": TaskTypeDefinition(
+        description="scheduling, configuration, reminders, lightweight operational tasks"
+    ),
+    "coding": TaskTypeDefinition(
+        description="implementation, debugging, refactors, shell automation, multi-file changes"
+    ),
+    "research": TaskTypeDefinition(
+        description="exploration, comparisons, reading docs or URLs, analysis"
+    ),
+}
+_TASK_TYPE_IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z][a-z0-9]*)*$")
+BuiltinTaskType = Literal["chat", "admin", "coding", "research"]
+# Configured extensions make the active task-type set dynamic at runtime.
+TaskType = str
+TaskComplexity = Literal["low", "medium", "high"]
+
+
+class ModelRouteMatch(Base):
+    """Criteria for a model routing rule."""
+
+    run_kind: RunKind | None = Field(
+        default=None,
+        validation_alias=AliasChoices("runKind", "run_kind", "taskKind", "task_kind"),
+        serialization_alias="runKind",
+    )
+    task_type: TaskType | None = Field(
+        default=None,
+        validation_alias=AliasChoices("taskType", "task_type"),
+        serialization_alias="taskType",
+    )
+    complexity: TaskComplexity | None = None
+
+    @property
+    def task_kind(self) -> RunKind | None:
+        """Deprecated compatibility alias for ``run_kind``."""
+        return self.run_kind
+
+
+class ModelRouteRule(Base):
+    """Map a routing context to a named model preset."""
+
+    match: ModelRouteMatch
+    preset: str
+
+
+class ModelRoutingConfig(Base):
+    """Cache-aware model routing based on run kind, task type, and complexity."""
+
+    enabled: bool = False
+    classifier_preset: str = Field(
+        default="fast",
+        validation_alias=AliasChoices("classifierPreset", "classifier_preset"),
+        serialization_alias="classifierPreset",
+    )
+    extended_task_types: dict[str, TaskTypeDefinition] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("extendedTaskTypes", "extended_task_types"),
+        serialization_alias="extendedTaskTypes",
+    )
+    rules: list[ModelRouteRule] = Field(default_factory=list)
+    default_preset: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("defaultPreset", "default_preset"),
+        serialization_alias="defaultPreset",
+    )
+    affinity_ttl_seconds: int = Field(
+        default=300,
+        ge=1,
+        validation_alias=AliasChoices("affinityTtlSeconds", "affinity_ttl_seconds"),
+        serialization_alias="affinityTtlSeconds",
+    )
+    cache_weight: float = Field(
+        default=0.65,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices("cacheWeight", "cache_weight"),
+        serialization_alias="cacheWeight",
+    )
+    switch_threshold: float = Field(
+        default=0.15,
+        ge=-1.0,
+        le=1.0,
+        validation_alias=AliasChoices("switchThreshold", "switch_threshold"),
+        serialization_alias="switchThreshold",
+    )
+    warm_prefix_tokens: int = Field(
+        default=16_000,
+        ge=1,
+        validation_alias=AliasChoices("warmPrefixTokens", "warm_prefix_tokens"),
+        serialization_alias="warmPrefixTokens",
+    )
+
+    @field_validator("extended_task_types")
+    @classmethod
+    def _validate_extended_task_types(
+        cls,
+        definitions: dict[str, TaskTypeDefinition],
+    ) -> dict[str, TaskTypeDefinition]:
+        for name in definitions:
+            if name == "other":
+                raise ValueError("extended task type 'other' is reserved and no longer supported")
+            if name in BUILTIN_TASK_TYPE_DEFINITIONS:
+                raise ValueError(f"extended task type {name!r} conflicts with a built-in task type")
+            if not _TASK_TYPE_IDENTIFIER_RE.fullmatch(name):
+                raise ValueError(
+                    f"extended task type {name!r} must be a lowercase snake_case identifier"
+                )
+        return definitions
+
+    @property
+    def task_type_definitions(self) -> dict[str, TaskTypeDefinition]:
+        """Return built-in and configured task types in classifier prompt order."""
+        return {**BUILTIN_TASK_TYPE_DEFINITIONS, **self.extended_task_types}
+
+    @model_validator(mode="after")
+    def _validate_rule_task_types(self) -> "ModelRoutingConfig":
+        active_types = self.task_type_definitions
+        for idx, rule in enumerate(self.rules):
+            task_type = rule.match.task_type
+            if task_type is not None and task_type not in active_types:
+                raise ValueError(
+                    f"rules[{idx}].match.task_type {task_type!r} is not a built-in "
+                    "or configured extended task type"
+                )
+        return self
+
+
 class AgentDefaults(Base):
     """Default agent configuration."""
 
@@ -162,6 +316,11 @@ class AgentDefaults(Base):
         serialization_alias="consolidationRatio",
     )  # Consolidation target ratio (0.5 = 50% of budget retained after compression)
     dream: DreamConfig = Field(default_factory=DreamConfig)
+    smart_model_routing: ModelRoutingConfig = Field(
+        default_factory=ModelRoutingConfig,
+        validation_alias=AliasChoices("smartModelRouting", "smart_model_routing"),
+        serialization_alias="smartModelRouting",
+    )
 
 
 class AgentsConfig(Base):
@@ -420,7 +579,23 @@ class Config(BaseSettings):
         for fallback in self.agents.defaults.fallback_models:
             if isinstance(fallback, str) and fallback not in self.model_presets:
                 raise ValueError(f"fallback_models entry {fallback!r} not found in model_presets")
+        routing = self.agents.defaults.smart_model_routing
+        if routing.enabled:
+            self._validate_routing_preset(routing.classifier_preset, "classifier_preset")
+            if routing.default_preset is not None:
+                self._validate_routing_preset(routing.default_preset, "default_preset")
+            for idx, rule in enumerate(routing.rules):
+                try:
+                    self._validate_routing_preset(rule.preset, f"rules[{idx}].preset")
+                except ValueError as exc:
+                    raise ValueError(str(exc)) from exc
         return self
+
+    def _validate_routing_preset(self, name: str, field_name: str) -> None:
+        if name == "default":
+            return
+        if name not in self.model_presets:
+            raise ValueError(f"smart_model_routing {field_name} {name!r} not found in model_presets")
 
     def resolve_default_preset(self) -> ModelPresetConfig:
         """Return the implicit `default` preset from agents.defaults fields."""

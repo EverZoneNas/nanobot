@@ -1381,6 +1381,125 @@ Existing configs do not need to change. Direct `agents.defaults.model`, `provide
 
 Set `agents.defaults.modelPreset` to choose the startup preset. When `modelPreset` is `null` or omitted, startup uses the implicit `default` preset from direct `agents.defaults.*` fields. Runtime changes made with `/model <preset>` are not written back to `config.json`; they affect future turns until the process restarts or another model/config change replaces them.
 
+### Model Routing
+
+`agents.defaults.smartModelRouting` enables cache-aware model selection based on run kind, task type, and complexity. Routing is **ephemeral**: it affects only the current run and does not change the global `/model` default. For normal chat sessions, nanobot keeps short-lived model affinity so a marginal route change does not discard a warm provider prompt cache.
+
+When enabled, nanobot:
+
+1. Infers the run kind (`chat`, `subagent`, `cron`, `local_trigger`, `dream`, or `sustained_goal`) from the runtime context.
+2. Runs the classifier only when an ordered rule that could match that run kind needs an unknown `taskType` or `complexity`. This applies to every run kind, not only chat.
+3. Resolves the first matching rule as the candidate route.
+4. For chat runs, switches models only when the candidate's estimated quality benefit outweighs the current route's prompt-cache penalty. Non-chat runs select the first matching candidate directly and do not persist cache affinity. Presets resolving to the same provider endpoint and model switch without a cache penalty.
+
+```json
+{
+  "modelPresets": {
+    "fast": {
+      "model": "gpt-4.1-mini",
+      "provider": "openai",
+      "maxTokens": 4096,
+      "contextWindowTokens": 128000
+    },
+    "deep": {
+      "model": "claude-opus-4-5",
+      "provider": "anthropic",
+      "maxTokens": 8192,
+      "contextWindowTokens": 200000,
+      "reasoningEffort": "high"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "modelPreset": "fast",
+      "smartModelRouting": {
+        "enabled": true,
+        "classifierPreset": "fast",
+        "affinityTtlSeconds": 300,
+        "cacheWeight": 0.65,
+        "switchThreshold": 0.15,
+        "warmPrefixTokens": 16000,
+        "extendedTaskTypes": {
+          "legal_review": {
+            "description": "contract, policy, and regulatory analysis"
+          }
+        },
+        "rules": [
+          { "match": { "runKind": "subagent", "taskType": "coding", "complexity": "high" }, "preset": "deep" },
+          { "match": { "runKind": "sustained_goal", "complexity": "high" }, "preset": "deep" },
+          { "match": { "runKind": "cron" }, "preset": "fast" },
+          { "match": { "runKind": "local_trigger" }, "preset": "fast" },
+          { "match": { "runKind": "dream" }, "preset": "fast" },
+          { "match": { "taskType": "legal_review" }, "preset": "deep" },
+          { "match": { "taskType": "coding", "complexity": "high" }, "preset": "deep" },
+          { "match": { "complexity": "low" }, "preset": "fast" }
+        ]
+      },
+      "dream": {
+        "modelOverride": "gpt-4.1-mini"
+      }
+    }
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `enabled` | Turn routing on or off. Default `false`. |
+| `classifierPreset` | Preset used for lightweight semantic classification when an eligible rule requires it. Must exist in `modelPresets` when routing is enabled. |
+| `extendedTaskTypes` | Optional mapping of custom machine identifiers to classifier definitions. Each value requires a non-empty `description`. |
+| `rules` | Ordered list of match rules. First match wins; put more specific rules first. |
+| `defaultPreset` | Optional fallback preset when the classifier fails or no rule matches. |
+| `affinityTtlSeconds` | Seconds of inactivity before the current chat route and cache observations expire. Default `300`. |
+| `cacheWeight` | Maximum cache-loss penalty applied to cross-model switches, from `0.0` to `1.0`. Default `0.65`. |
+| `switchThreshold` | Minimum quality-minus-cache score required to switch models. Default `0.15`. |
+| `warmPrefixTokens` | Reusable prompt-token estimate at which the full `cacheWeight` penalty applies. Default `16000`. |
+
+Rule `match` fields (all optional except that at least one should be set per rule):
+
+| Match field | Values |
+|-------------|--------|
+| `runKind` | `subagent`, `cron`, `local_trigger`, `dream`, `sustained_goal`, `chat` |
+| `taskType` | Built-ins `chat`, `admin`, `coding`, `research`, or a key from `extendedTaskTypes` (from the classifier when required) |
+| `complexity` | `low`, `medium`, `high` (from the classifier when required) |
+
+`extendedTaskTypes` augments rather than replaces the built-ins. Its JSON shape is a mapping so rules can refer directly to stable identifiers:
+
+```json
+{
+  "extendedTaskTypes": {
+    "legal_review": {
+      "description": "contract, policy, and regulatory analysis"
+    }
+  }
+}
+```
+
+Custom names must be lowercase snake_case machine identifiers, with letter-led segments (for example, `legal_review` or `tier2_support`). Names that collide with a built-in are rejected, and the removed legacy name `other` is reserved. Descriptions are trimmed and must contain non-whitespace text. Every rule `taskType` is validated against the merged built-in and extended set even when routing is disabled, so misspelled or removed extensions fail configuration loading instead of silently becoming unreachable. When routing is enabled, the existing preset validation also applies to the classifier, default, and rule presets.
+
+The classifier prompt is generated in the canonical built-in order `chat`, `admin`, `coding`, `research`, followed by extended types in their JSON configuration order. Classifier output is accepted only when its `task_type` is one of those active keys, and the classifier must choose the best matching active type; there is no catch-all task type. Classification failures retain the existing internal `None` result and follow the normal routing fallback. Changing a custom definition changes the classifier signature used by the router, so the classifier snapshot and prompt contract are refreshed.
+
+> **Migration:** `other` is no longer a built-in task type. Existing rules with `"taskType": "other"` now fail configuration validation and must be removed or changed to one of the four built-ins or a purpose-specific `extendedTaskTypes` key. They are not silently reinterpreted.
+
+`taskKind` (and snake-case `task_kind`) is a deprecated read-only compatibility alias for `runKind`; new configurations and serialized output use `runKind`. Rules containing only known fields, such as `runKind: cron`, stay on the deterministic fast path and do not invoke the classifier. A semantic rule such as `runKind: subagent` plus `taskType: coding` can invoke classification for a subagent run when its task type is not already known.
+
+The system-managed heartbeat and user-created cron jobs both have `runKind: cron` because both are scheduler invocations. Heartbeat keeps its dedicated `heartbeat` session and notification policy, while a session-bound user cron is identified by its structured `_cron_trigger` message metadata. A local trigger is similarly identified by `_local_trigger` metadata and has `runKind: local_trigger`. Explicit run kinds and Dream/heartbeat session identities remain authoritative; otherwise automation metadata takes precedence over active sustained-goal state, so an automated turn in a goal-bearing session routes as `cron` or `local_trigger`.
+
+`agents.defaults.dream.modelOverride` still applies for Dream runs when set; it takes precedence over routing rules for `runKind: dream`.
+
+For cross-model chat candidates, nanobot calculates:
+
+```text
+qualityBenefit = confidence × {low: 0.25, medium: 0.60, high: 1.00}
+reusableTokens = min(currentPromptEstimate, max(previousPromptEstimate, cachedTokens))
+cachePenalty = cacheWeight × min(reusableTokens / warmPrefixTokens, 1.0)
+switchScore = qualityBenefit - cachePenalty
+```
+
+The candidate is selected when `switchScore >= switchThreshold`; otherwise the current route is retained. If classification fails, an unexpired affinity is retained before falling back to `defaultPreset` or the global model. Affinity is cleared by `/new`, session forks, persisted compaction, TTL expiry, removed presets, or provider/model identity changes.
+
+The WebUI shows the selected model in the composer badge and includes the cache-routing reason in its tooltip. The `turn_model_routed` websocket event also includes the candidate route, decision reason, score components, and estimated reusable tokens.
+
 ### Model Fallbacks
 
 `agents.defaults.fallbackModels` defines an ordered failover chain for the active model configuration. The primary model is still selected by `agents.defaults.modelPreset` or, in older configs, by the implicit `default` preset from direct `agents.defaults.*` fields.

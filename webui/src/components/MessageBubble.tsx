@@ -21,6 +21,7 @@ import { AttachmentTile } from "@/components/AttachmentTile";
 import { CliAppMentionText } from "@/components/CliAppMentionText";
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { MarkdownText, preloadMarkdownText } from "@/components/MarkdownText";
+import { TurnRoutingStrip } from "@/components/thread/TurnRoutingStrip";
 import {
   Tooltip,
   TooltipContent,
@@ -31,6 +32,7 @@ import { cn } from "@/lib/utils";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { formatTurnLatency } from "@/lib/format";
 import { toMediaAttachment } from "@/lib/media";
+import { useShowModelRouting } from "@/hooks/useShowModelRouting";
 import type {
   CliAppInfo,
   McpPresetInfo,
@@ -89,6 +91,7 @@ export function MessageBubble({
   onForkFromHere,
 }: MessageBubbleProps) {
   const { t } = useTranslation();
+  const showModelRouting = useShowModelRouting();
   const [copied, setCopied] = useState(false);
   const copyResetRef = useRef<number | null>(null);
   const baseAnim = "animate-in fade-in-0 slide-in-from-bottom-1 duration-300";
@@ -190,6 +193,7 @@ export function MessageBubble({
     && !message.isStreaming
     && (!empty || hasReasoning || media.length > 0);
   const showAssistantFooterRow = showCopyButton || showForkButton || showLatencyFooter;
+  const showRoutingStrip = showModelRouting && !!message.modelRouting;
   return (
     <div className={cn("w-full text-[15px]", baseAnim)} style={{ lineHeight: "var(--cjk-line-height)" }}>
       {hasReasoning ? (
@@ -217,6 +221,9 @@ export function MessageBubble({
             {message.content}
           </MarkdownText>
           {media.length > 0 ? <MessageMedia media={media} align="left" /> : null}
+          {showRoutingStrip ? (
+            <TurnRoutingStrip info={message.modelRouting} variant="message" />
+          ) : null}
           {showAssistantFooterRow ? (
             <TooltipProvider delayDuration={220} skipDelayDuration={80}>
               <div className="mt-2 flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground">

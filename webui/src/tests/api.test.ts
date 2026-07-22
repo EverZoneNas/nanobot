@@ -195,6 +195,7 @@ describe("webui API helpers", () => {
   it("serializes settings updates as a narrow query string", async () => {
     await updateSettings("tok", {
       modelPreset: "default",
+      smartModelRoutingEnabled: true,
       model: "openrouter/test",
       provider: "openrouter",
       contextWindowTokens: 262144,
@@ -205,7 +206,7 @@ describe("webui API helpers", () => {
     });
 
     expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/update?model_preset=default&model=openrouter%2Ftest&provider=openrouter&context_window_tokens=262144&timezone=Asia%2FShanghai&bot_name=nanobot&bot_icon=nb&tool_hint_max_length=120",
+      "/api/settings/update?model_preset=default&smart_model_routing_enabled=true&model=openrouter%2Ftest&provider=openrouter&context_window_tokens=262144&timezone=Asia%2FShanghai&bot_name=nanobot&bot_icon=nb&tool_hint_max_length=120",
       expect.objectContaining({
         headers: { Authorization: "Bearer tok" },
       }),

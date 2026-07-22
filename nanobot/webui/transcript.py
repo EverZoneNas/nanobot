@@ -1232,6 +1232,53 @@ def _media_from_signed_urls(value: Any) -> list[dict[str, Any]]:
     return media
 
 
+def model_routing_from_transcript_record(rec: dict[str, Any]) -> dict[str, Any]:
+    """Map a persisted ``turn_model_routed`` row to WebUI ``modelRouting`` fields."""
+    model_name = rec.get("model_name")
+    if not isinstance(model_name, str) or not model_name.strip():
+        return {}
+    routing: dict[str, Any] = {"modelName": model_name.strip()}
+    model_preset = rec.get("model_preset")
+    if isinstance(model_preset, str) and model_preset.strip():
+        routing["modelPreset"] = model_preset.strip()
+    run_kind = rec.get("run_kind")
+    if not isinstance(run_kind, str) or not run_kind.strip():
+        run_kind = rec.get("task_kind")
+    if isinstance(run_kind, str) and run_kind.strip():
+        routing["runKind"] = run_kind.strip()
+    task_type = rec.get("task_type")
+    if isinstance(task_type, str) and task_type.strip():
+        routing["taskType"] = task_type.strip()
+    complexity = rec.get("complexity")
+    if isinstance(complexity, str) and complexity.strip():
+        routing["complexity"] = complexity.strip()
+    candidate_model = rec.get("candidate_model_name")
+    if isinstance(candidate_model, str) and candidate_model.strip():
+        routing["candidateModelName"] = candidate_model.strip()
+    candidate_preset = rec.get("candidate_model_preset")
+    if isinstance(candidate_preset, str) and candidate_preset.strip():
+        routing["candidateModelPreset"] = candidate_preset.strip()
+    decision_reason = rec.get("decision_reason")
+    if isinstance(decision_reason, str) and decision_reason.strip():
+        routing["decisionReason"] = decision_reason.strip()
+    switch_score = rec.get("switch_score")
+    if isinstance(switch_score, (int, float)):
+        routing["switchScore"] = float(switch_score)
+    quality_benefit = rec.get("quality_benefit")
+    if isinstance(quality_benefit, (int, float)):
+        routing["qualityBenefit"] = float(quality_benefit)
+    cache_penalty = rec.get("cache_penalty")
+    if isinstance(cache_penalty, (int, float)):
+        routing["cachePenalty"] = float(cache_penalty)
+    reusable_tokens = rec.get("estimated_reusable_tokens")
+    if isinstance(reusable_tokens, (int, float)) and reusable_tokens > 0:
+        routing["estimatedReusableTokens"] = int(reusable_tokens)
+    turn_id = rec.get("turn_id")
+    if isinstance(turn_id, str) and turn_id:
+        routing["turnId"] = turn_id
+    return routing
+
+
 def replay_transcript_to_ui_messages(
     lines: list[dict[str, Any]],
     *,
@@ -1257,6 +1304,7 @@ def replay_transcript_to_ui_messages(
     _ts_base = int(time.time() * 1000)
     closed_turn_ids: set[str] = set()
     replay_turn_aliases: dict[str, str] = {}
+    routing_by_turn: dict[str, dict[str, Any]] = {}
 
     def _new_id(prefix: str, idx: int) -> str:
         return f"{prefix}-{idx}-{uuid.uuid4().hex[:8]}"
@@ -1471,6 +1519,22 @@ def replay_transcript_to_ui_messages(
                 }
                 return
 
+    def stamp_model_routing(turn_id: str | None = None) -> None:
+        if not isinstance(turn_id, str) or not turn_id:
+            return
+        routing = routing_by_turn.get(turn_id)
+        if not routing:
+            return
+        for i in range(len(messages) - 1, -1, -1):
+            candidate = messages[i]
+            if candidate.get("role") != "assistant" or candidate.get("kind") == "trace":
+                continue
+            if candidate.get("turnId") != turn_id:
+                continue
+            messages[i] = {**candidate, "modelRouting": routing}
+            routing_by_turn.pop(turn_id, None)
+            return
+
     def absorb_complete(extra: dict[str, Any], idx: int) -> None:
         nonlocal active_activity_segment_id, active_file_edit_segment_id
         last = messages[-1] if messages else None
@@ -1492,6 +1556,7 @@ def replay_transcript_to_ui_messages(
             )
         active_activity_segment_id = None
         active_file_edit_segment_id = None
+        stamp_model_routing(extra.get("turnId") if isinstance(extra.get("turnId"), str) else None)
 
     def find_file_edit_trace_index(
         segment: str | None,
@@ -1880,6 +1945,15 @@ def replay_transcript_to_ui_messages(
                 suppress_until_turn_end = True
             continue
 
+        if ev == "turn_model_routed":
+            routing = model_routing_from_transcript_record(rec)
+            turn_id = rec.get("turn_id")
+            if routing:
+                if isinstance(turn_id, str) and turn_id:
+                    routing_by_turn[turn_id] = routing
+                stamp_model_routing(turn_id if isinstance(turn_id, str) else None)
+            continue
+
         if ev == "turn_end":
             suppress_until_turn_end = False
             active_activity_segment_id = None
@@ -1897,6 +1971,7 @@ def replay_transcript_to_ui_messages(
             lat = rec.get("latency_ms")
             if isinstance(lat, (int, float)) and lat >= 0:
                 stamp_latency(int(lat))
+            stamp_model_routing(turn_id if isinstance(turn_id, str) else None)
             buffer_message_id = None
             buffer_parts = []
             continue
