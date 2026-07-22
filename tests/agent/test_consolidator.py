@@ -11,6 +11,7 @@ from nanobot.agent.memory import (
 )
 from nanobot.providers.base import LLMResponse
 from nanobot.session.manager import Session
+from nanobot.session.routing_state import MODEL_ROUTING_AFFINITY_KEY
 from nanobot.utils.prompt_templates import render_template
 
 
@@ -434,6 +435,7 @@ class TestCompactIdleSession:
         for i in range(20):
             session.add_message("user", f"user msg {i}")
             session.add_message("assistant", f"assistant msg {i}")
+        session.metadata[MODEL_ROUTING_AFFINITY_KEY] = {"preset": "deep"}
         session.updated_at = old_ts
         sessions.save(session)
 
@@ -447,6 +449,7 @@ class TestCompactIdleSession:
         assert meta is not None
         assert meta["text"] == "Summary of old conversation."
         assert "last_active" in meta
+        assert MODEL_ROUTING_AFFINITY_KEY not in reloaded.metadata
         assert reloaded.updated_at == old_ts
 
     @pytest.mark.asyncio

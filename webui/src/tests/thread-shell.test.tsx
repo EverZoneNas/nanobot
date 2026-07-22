@@ -15,6 +15,9 @@ function makeClient() {
   const chatHandlers = new Map<string, Set<(ev: import("@/lib/types").InboundEvent) => void>>();
   const sessionUpdateHandlers = new Set<(chatId: string, scope?: string) => void>();
   const goalStateByChatId = new Map<string, import("@/lib/types").GoalStateWsPayload>();
+  const turnRoutingByChatId = new Map<string, import("@/lib/types").TurnRoutingInfo>();
+  const turnRoutingHandlers =
+    new Set<(chatId: string, routing: import("@/lib/types").TurnRoutingInfo) => void>();
   return {
     status: "open" as const,
     defaultChatId: null as string | null,
@@ -22,6 +25,15 @@ function makeClient() {
     onRuntimeModelUpdate: () => () => {},
     getRunStartedAt: () => null,
     getGoalState: (chatId: string) => goalStateByChatId.get(chatId),
+    getTurnRoutingInfo: (chatId: string) => turnRoutingByChatId.get(chatId),
+    onTurnModelRouted: (
+      handler: (chatId: string, routing: import("@/lib/types").TurnRoutingInfo) => void,
+    ) => {
+      turnRoutingHandlers.add(handler);
+      return () => {
+        turnRoutingHandlers.delete(handler);
+      };
+    },
     onChat: (chatId: string, handler: (ev: import("@/lib/types").InboundEvent) => void) => {
       let handlers = chatHandlers.get(chatId);
       if (!handlers) {
@@ -56,6 +68,10 @@ function makeClient() {
     },
     _emitSessionUpdate(chatId: string, scope?: string) {
       for (const h of sessionUpdateHandlers) h(chatId, scope);
+    },
+    _emitTurnRouting(chatId: string, routing: import("@/lib/types").TurnRoutingInfo) {
+      turnRoutingByChatId.set(chatId, routing);
+      for (const h of turnRoutingHandlers) h(chatId, routing);
     },
     sendMessage: vi.fn(),
     newChat: vi.fn(),
@@ -219,6 +235,52 @@ function modelSettings(model: string, provider: string): SettingsPayload {
   };
 }
 
+function smartRoutingSettings(): SettingsPayload {
+  const base = modelSettings("qwen-fast", "deepseek");
+  return {
+    ...base,
+    agent: {
+      ...base.agent,
+      model: "qwen-fast",
+      provider: "deepseek",
+      resolved_provider: "deepseek",
+      model_preset: "local-fast",
+    },
+    smart_model_routing: { enabled: true },
+    model_presets: [
+      {
+        name: "local-fast",
+        label: "local-fast",
+        active: true,
+        is_default: false,
+        model: "qwen-fast",
+        provider: "deepseek",
+        max_tokens: 4096,
+        context_window_tokens: 65536,
+        temperature: 0.7,
+        reasoning_effort: null,
+      },
+      {
+        name: "openrouter-fast",
+        label: "openrouter-fast",
+        active: false,
+        is_default: false,
+        model: "deepseek/deepseek-v4-flash",
+        provider: "openrouter",
+        max_tokens: 4096,
+        context_window_tokens: 65536,
+        temperature: 0.7,
+        reasoning_effort: null,
+      },
+    ],
+    providers: [
+      { name: "deepseek", label: "DeepSeek", configured: true },
+      { name: "openrouter", label: "OpenRouter", configured: true },
+      { name: "openai_codex", label: "OpenAI Codex", configured: true },
+    ],
+  };
+}
+
 describe("ThreadShell", () => {
   beforeEach(() => {
     vi.stubGlobal(
@@ -249,6 +311,51 @@ describe("ThreadShell", () => {
     fireEvent.click(screen.getByText("Important conversation"));
 
     expect(onGoHome).not.toHaveBeenCalled();
+  });
+
+  it("shows persistent routing info under the assistant reply", async () => {
+    const client = makeClient();
+    const turnId = "turn-route-1";
+
+    render(
+      wrap(
+        client,
+        <ThreadShell
+          session={session("chat-route")}
+          title="Route debug"
+          onToggleSidebar={() => {}}
+          settingsSnapshot={modelSettings("gpt-4.1-mini", "deepseek")}
+        />,
+      ),
+    );
+
+    await act(async () => {
+      client._emitTurnRouting("chat-route", {
+        turnId,
+        modelName: "claude-opus-4-5",
+        modelPreset: "deep",
+        taskKind: "chat",
+        taskType: "coding",
+        complexity: "high",
+        ephemeral: true,
+      });
+      client._emitChat("chat-route", {
+        event: "delta",
+        chat_id: "chat-route",
+        text: "Routed answer",
+        turn_id: turnId,
+        turn_phase: "answer",
+        turn_seq: 2,
+      });
+    });
+
+    await waitFor(() => expect(screen.getByText("Model route")).toBeInTheDocument());
+    expect(screen.getByText(/preset deep/i)).toBeInTheDocument();
+    expect(screen.getByText(/model claude-opus-4-5/i)).toBeInTheDocument();
+    expect(screen.getByText(/kind chat/i)).toBeInTheDocument();
+    expect(screen.getByText(/type coding/i)).toBeInTheDocument();
+    expect(screen.getByText(/complexity high/i)).toBeInTheDocument();
+    expect(screen.getByText("Routed answer")).toBeInTheDocument();
   });
 
   it("updates the composer model logo when settings snapshot changes", async () => {
@@ -284,6 +391,63 @@ describe("ThreadShell", () => {
     });
 
     expect(await screen.findByTestId("composer-model-logo-openai_codex")).toBeInTheDocument();
+  });
+
+  it("shows Smart in the composer badge when smart model routing is enabled", async () => {
+    const client = makeClient();
+    render(
+      wrap(
+        client,
+        <ThreadShell
+          session={session("smart-routing-idle")}
+          title="Smart routing"
+          onToggleSidebar={() => {}}
+          settingsSnapshot={smartRoutingSettings()}
+        />,
+        "qwen-fast",
+      ),
+    );
+
+    expect(await screen.findByText("Smart")).toBeInTheDocument();
+    expect(screen.queryByText("qwen-fast")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("composer-model-logo-deepseek")).not.toBeInTheDocument();
+  });
+
+  it("keeps the Smart badge during a routed turn", async () => {
+    const client = makeClient();
+    render(
+      wrap(
+        client,
+        <ThreadShell
+          session={session("smart-routing-live")}
+          title="Smart routing live"
+          onToggleSidebar={() => {}}
+          settingsSnapshot={smartRoutingSettings()}
+        />,
+        "qwen-fast",
+      ),
+    );
+
+    await act(async () => {
+      client._emitTurnRouting("smart-routing-live", {
+        modelName: "deepseek/deepseek-v4-flash",
+        modelPreset: "openrouter-fast",
+        taskKind: "chat",
+        taskType: "research",
+        complexity: "low",
+        ephemeral: true,
+      });
+      client._emitChat("smart-routing-live", {
+        event: "delta",
+        chat_id: "smart-routing-live",
+        text: "Routing response",
+      });
+    });
+
+    expect(await screen.findByText("Smart")).toBeInTheDocument();
+    expect(screen.queryByText("deepseek-v4-flash")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("composer-model-logo-openrouter")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("composer-model-logo-deepseek")).not.toBeInTheDocument();
   });
 
   it("opens model settings from the unconfigured model badge", async () => {

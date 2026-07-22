@@ -18,6 +18,7 @@ import type {
   OutboundMedia,
   GoalStateWsPayload,
   ToolProgressEvent,
+  TurnRoutingInfo,
   UIImage,
   UIFileEdit,
   UIMessage,
@@ -245,30 +246,84 @@ function stampLastAssistantLatency(
   return prev;
 }
 
+function applyPendingModelRouting(
+  message: UIMessage,
+  pending: Map<string, TurnRoutingInfo>,
+): UIMessage {
+  if (message.modelRouting || message.role !== "assistant" || message.kind === "trace") {
+    return message;
+  }
+  const turnId = message.turnId;
+  if (!turnId) return message;
+  const routing = pending.get(turnId);
+  if (!routing) return message;
+  return { ...message, modelRouting: routing };
+}
+
+function stampAssistantModelRouting(
+  prev: UIMessage[],
+  routing: TurnRoutingInfo,
+  turnId?: string,
+): UIMessage[] {
+  const resolvedTurnId = turnId ?? routing.turnId;
+  for (let i = prev.length - 1; i >= 0; i -= 1) {
+    const m = prev[i];
+    if (m.role === "user") break;
+    if (m.role === "assistant" && m.kind !== "trace") {
+      if (!resolvedTurnId || !m.turnId || m.turnId === resolvedTurnId) {
+        return [...prev.slice(0, i), { ...m, modelRouting: routing }, ...prev.slice(i + 1)];
+      }
+    }
+  }
+  return prev;
+}
+
+function applyPendingRoutingToMessages(
+  prev: UIMessage[],
+  pending: Map<string, TurnRoutingInfo>,
+): UIMessage[] {
+  if (pending.size === 0) return prev;
+  let changed = false;
+  const next = prev.map((message) => {
+    const updated = applyPendingModelRouting(message, pending);
+    if (updated !== message) changed = true;
+    return updated;
+  });
+  return changed ? next : prev;
+}
+
 function absorbCompleteAssistantMessage(
   prev: UIMessage[],
   message: Omit<UIMessage, "id" | "role" | "createdAt">,
+  pending?: Map<string, TurnRoutingInfo>,
 ): UIMessage[] {
+  const pendingRouting = pending ?? new Map<string, TurnRoutingInfo>();
   const last = prev[prev.length - 1];
   if (!last || !isReasoningOnlyPlaceholder(last) || !matchesTurn(last, message)) {
     return [
       ...prev,
-      {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        createdAt: Date.now(),
-        ...message,
-      },
+      applyPendingModelRouting(
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          createdAt: Date.now(),
+          ...message,
+        },
+        pendingRouting,
+      ),
     ];
   }
   return [
     ...prev.slice(0, -1),
-    {
-      ...last,
-      ...message,
-      isStreaming: false,
-      reasoningStreaming: false,
-    },
+    applyPendingModelRouting(
+      {
+        ...last,
+        ...message,
+        isStreaming: false,
+        reasoningStreaming: false,
+      },
+      pendingRouting,
+    ),
   ];
 }
 
@@ -522,6 +577,10 @@ export function useNanobotStream(
   runStartedAt: number | null;
   /** Latest sustained goal for this ``chatId`` (``goal_state`` WS events). */
   goalState: GoalStateWsPayload | undefined;
+  /** Latest ephemeral per-turn routed model for this chat, if any. */
+  turnRoutedModel: string | null;
+  /** Latest per-turn routing metadata for this chat, if any. */
+  turnRoutingInfo: TurnRoutingInfo | null;
   send: (content: string, images?: SendImage[], options?: SendOptions) => void;
   transcribeAudio: (dataUrl: string, options?: { durationMs?: number }) => Promise<string>;
   stop: () => void;
@@ -541,6 +600,8 @@ export function useNanobotStream(
   /** Unix epoch seconds when the current user turn started; cleared on ``idle``. */
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [goalState, setGoalState] = useState<GoalStateWsPayload | undefined>(undefined);
+  const [turnRoutedModel, setTurnRoutedModel] = useState<string | null>(null);
+  const [turnRoutingInfo, setTurnRoutingInfo] = useState<TurnRoutingInfo | null>(null);
   const [streamError, setStreamError] = useState<StreamError | null>(null);
   const buffer = useRef<StreamBuffer | null>(null);
   const activeAssistantRef = useRef<ActiveAssistantCursor | null>(null);
@@ -552,6 +613,7 @@ export function useNanobotStream(
   const streamFrameRef = useRef<number | null>(null);
   const suppressStreamUntilTurnEndRef = useRef(false);
   const sideChannelTurnIdsRef = useRef<Set<string>>(new Set());
+  const pendingRoutingByTurnIdRef = useRef<Map<string, TurnRoutingInfo>>(new Map());
   /** Timer that defers ``isStreaming = false`` after ``stream_end``.
    *
    * When the model finishes a text segment and calls a tool, the server
@@ -692,12 +754,15 @@ export function useNanobotStream(
       }
 
       const target = next[targetIndex];
-      const merged: UIMessage = {
-        ...target,
-        content: target.content + chunk,
-        isStreaming: true,
-        ...turn,
-      };
+      const merged: UIMessage = applyPendingModelRouting(
+        {
+          ...target,
+          content: target.content + chunk,
+          isStreaming: true,
+          ...turn,
+        },
+        pendingRoutingByTurnIdRef.current,
+      );
       closedAssistantStreamIdsRef.current.delete(merged.id);
       activeAssistantRef.current = { id: merged.id, index: targetIndex };
       buffer.current = { messageId: merged.id };
@@ -752,30 +817,36 @@ export function useNanobotStream(
           ?? findStreamingAssistantIndex(next, closedAssistantStreamIdsRef.current, turn);
           if (targetIndex !== null) {
             const target = next[targetIndex];
-            next = replaceMessageAt(next, targetIndex, {
-              ...target,
-              content: finalAnswerText,
-              isStreaming: true,
-              ...turn,
-            });
+            next = replaceMessageAt(next, targetIndex, applyPendingModelRouting(
+              {
+                ...target,
+                content: finalAnswerText,
+                isStreaming: true,
+                ...turn,
+              },
+              pendingRoutingByTurnIdRef.current,
+            ));
           } else {
             const id = crypto.randomUUID();
             closedAssistantStreamIdsRef.current.add(id);
             next = [
               ...next,
-              {
-                id,
-                role: "assistant",
-                content: finalAnswerText,
-                isStreaming: true,
-                ...turn,
-                createdAt: Date.now(),
-              },
+              applyPendingModelRouting(
+                {
+                  id,
+                  role: "assistant",
+                  content: finalAnswerText,
+                  isStreaming: true,
+                  ...turn,
+                  createdAt: Date.now(),
+                },
+                pendingRoutingByTurnIdRef.current,
+              ),
             ];
           }
         }
       if (options?.closeAnswerSegment) closeActiveAssistantStream();
-      return next;
+      return applyPendingRoutingToMessages(next, pendingRoutingByTurnIdRef.current);
     });
   }, [applyPendingStreamEvents, closeActiveAssistantStream, resolveActiveAssistantIndex]);
 
@@ -801,12 +872,26 @@ export function useNanobotStream(
     setStreamError(null);
     setRunStartedAt(chatId ? client.getRunStartedAt(chatId) : null);
     setGoalState(chatId ? client.getGoalState(chatId) : undefined);
+    const routing = (
+      chatId && typeof client.getTurnRoutingInfo === "function"
+        ? client.getTurnRoutingInfo(chatId) ?? null
+        : null
+    );
+    setTurnRoutingInfo(routing);
+    setTurnRoutedModel(routing?.modelName ?? null);
     buffer.current = null;
     activeAssistantRef.current = null;
     closedAssistantStreamIdsRef.current.clear();
     clearActivitySegment();
     clearPendingStreamWork();
     sideChannelTurnIdsRef.current.clear();
+    pendingRoutingByTurnIdRef.current = new Map(
+      initialMessages.flatMap((message) => (
+        message.turnId && message.modelRouting
+          ? [[message.turnId, message.modelRouting] as const]
+          : []
+      )),
+    );
     suppressStreamUntilTurnEndRef.current = false;
     cancelStreamEndTimer();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -815,6 +900,25 @@ export function useNanobotStream(
   useEffect(() => {
     if (hasPendingToolCalls) setIsStreaming(true);
   }, [hasPendingToolCalls]);
+
+  useEffect(() => {
+    if (!chatId) return;
+    if (typeof client.onTurnModelRouted !== "function") return;
+    return client.onTurnModelRouted((routedChatId, routing) => {
+      if (routedChatId === chatId) {
+        setTurnRoutingInfo(routing);
+        setTurnRoutedModel(routing.modelName);
+        if (routing.turnId) {
+          pendingRoutingByTurnIdRef.current.set(routing.turnId, routing);
+        }
+        setMessages((prev) => {
+          let next = stampAssistantModelRouting(prev, routing, routing.turnId);
+          next = applyPendingRoutingToMessages(next, pendingRoutingByTurnIdRef.current);
+          return next;
+        });
+      }
+    });
+  }, [chatId, client]);
 
   useEffect(() => {
     if (!chatId) return;
@@ -923,6 +1027,8 @@ export function useNanobotStream(
           return finalized;
         });
         suppressStreamUntilTurnEndRef.current = false;
+        setTurnRoutingInfo(null);
+        setTurnRoutedModel(null);
         onTurnEnd?.();
         return;
       }
@@ -1025,7 +1131,7 @@ export function useNanobotStream(
             ...(hasMedia ? { media } : {}),
             ...(ev.source ? { source: ev.source } : {}),
             ...turnFieldsFromEvent(ev, "answer"),
-          }));
+          }, pendingRoutingByTurnIdRef.current));
           if (typeof ev.turn_id === "string") sideChannelTurnIdsRef.current.delete(ev.turn_id);
           return;
         }
@@ -1051,7 +1157,7 @@ export function useNanobotStream(
             ...(lat !== undefined ? { latencyMs: lat } : {}),
             ...(ev.source ? { source: ev.source } : {}),
             ...turnFieldsFromEvent(ev, "answer"),
-          });
+          }, pendingRoutingByTurnIdRef.current);
         });
         if (hasMedia) {
           suppressStreamUntilTurnEndRef.current = true;
@@ -1215,6 +1321,8 @@ export function useNanobotStream(
     isStreaming,
     runStartedAt,
     goalState,
+    turnRoutedModel,
+    turnRoutingInfo,
     send,
     transcribeAudio,
     stop,

@@ -198,6 +198,7 @@ interface ThreadComposerProps {
   modelLabel?: string | null;
   modelProvider?: string | null;
   modelProviderLabel?: string | null;
+  modelRoutingHint?: string | null;
   modelNeedsSetup?: boolean;
   onModelBadgeClick?: () => void;
   variant?: "thread" | "hero";
@@ -817,6 +818,7 @@ export function ThreadComposer({
   modelLabel = null,
   modelProvider = null,
   modelProviderLabel = null,
+  modelRoutingHint = null,
   modelNeedsSetup = false,
   onModelBadgeClick,
   variant = "thread",
@@ -1923,6 +1925,7 @@ export function ThreadComposer({
                 label={modelLabel}
                 provider={modelProvider}
                 providerLabel={modelProviderLabel}
+                routingHint={modelRoutingHint}
                 needsSetup={modelNeedsSetup}
                 isHero={isHero}
                 onClick={modelNeedsSetup ? onModelBadgeClick : undefined}
@@ -2211,6 +2214,7 @@ function ComposerModelBadge({
   label,
   provider,
   providerLabel,
+  routingHint,
   needsSetup,
   isHero,
   onClick,
@@ -2218,6 +2222,7 @@ function ComposerModelBadge({
   label: string;
   provider?: string | null;
   providerLabel?: string | null;
+  routingHint?: string | null;
   needsSetup?: boolean;
   isHero: boolean;
   onClick?: () => void;
@@ -2227,7 +2232,8 @@ function ComposerModelBadge({
   const [logoIndex, setLogoIndex] = useState(0);
   const logoUrl = brand?.logoUrls[logoIndex];
   const showLogo = !!logoUrl;
-  const title = providerLabel ? `${label} · ${providerLabel}` : label;
+  const baseTitle = providerLabel ? `${label} · ${providerLabel}` : label;
+  const title = routingHint ? `${baseTitle} · ${routingHint}` : baseTitle;
   const interactive = Boolean(onClick);
   const Container = interactive ? "button" : "span";
 

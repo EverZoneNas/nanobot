@@ -244,6 +244,83 @@ def test_update_agent_settings_accepts_context_window_options(
     assert saved.agents.defaults.context_window_tokens == 200000
 
 
+def test_update_agent_settings_toggles_smart_model_routing(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config = Config()
+    config.model_presets["fast"] = ModelPresetConfig(
+        label="Fast",
+        provider="openai",
+        model="openai/gpt-4.1-mini",
+    )
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    payload = update_agent_settings({"smart_model_routing_enabled": ["true"]})
+
+    assert payload["smart_model_routing"]["enabled"] is True
+    saved = load_config(config_path)
+    assert saved.agents.defaults.smart_model_routing.enabled is True
+
+
+def test_update_agent_settings_rejects_model_preset_when_routing_enabled(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config = Config()
+    config.model_presets["fast"] = ModelPresetConfig(
+        label="Fast",
+        provider="openai",
+        model="openai/gpt-4.1-mini",
+    )
+    config.model_presets["deep"] = ModelPresetConfig(
+        label="Deep",
+        provider="openai",
+        model="openai/gpt-4.1",
+    )
+    config.agents.defaults.smart_model_routing.enabled = True
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    with pytest.raises(WebUISettingsError, match="smart model routing"):
+        update_agent_settings({"model_preset": ["deep"]})
+
+
+def test_create_model_configuration_does_not_switch_preset_when_routing_enabled(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config = Config()
+    config.agents.defaults.model = "openai/gpt-4o"
+    config.agents.defaults.provider = "openai"
+    config.providers.openai.api_key = "sk-test"
+    config.model_presets["fast"] = ModelPresetConfig(
+        label="Fast",
+        provider="openai",
+        model="openai/gpt-4.1-mini",
+    )
+    config.agents.defaults.smart_model_routing.enabled = True
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    payload = create_model_configuration(
+        {
+            "label": ["Fast writing"],
+            "provider": ["openai"],
+            "model": ["openai/gpt-4.1-mini"],
+        }
+    )
+
+    assert payload["agent"]["model_preset"] == "default"
+    saved = load_config(config_path)
+    assert saved.agents.defaults.model_preset is None
+    assert "fast-writing" in saved.model_presets
+
+
 def test_update_model_configuration_accepts_context_window_options(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

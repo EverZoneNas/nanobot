@@ -68,6 +68,8 @@ export interface UIMessage {
   reasoningStreaming?: boolean;
   /** End-to-end wall time for this assistant turn (persisted ``latency_ms`` / ``turn_end``). */
   latencyMs?: number;
+  /** Per-turn smart model routing decision, persisted on the assistant reply. */
+  modelRouting?: TurnRoutingInfo;
   /** Lightweight provenance for proactive assistant messages. */
   source?: UIMessageSource;
   /** Stable protocol metadata for grouping all activity emitted by one user turn. */
@@ -196,6 +198,23 @@ export interface GoalStateWsPayload {
   active: boolean;
   ui_summary?: string;
   objective?: string;
+}
+
+export interface TurnRoutingInfo {
+  turnId?: string;
+  modelName: string;
+  modelPreset?: string | null;
+  taskKind?: string;
+  taskType?: string | null;
+  complexity?: string | null;
+  candidateModelName?: string | null;
+  candidateModelPreset?: string | null;
+  decisionReason?: ModelRoutingDecisionReason | null;
+  switchScore?: number | null;
+  qualityBenefit?: number | null;
+  cachePenalty?: number | null;
+  estimatedReusableTokens?: number;
+  ephemeral?: boolean;
 }
 
 export interface ToolProgressEvent {
@@ -375,6 +394,9 @@ export interface SettingsPayload {
     bot_name: string;
     bot_icon: string;
     tool_hint_max_length: number;
+  };
+  smart_model_routing?: {
+    enabled: boolean;
   };
   model_presets: Array<{
     name: string;
@@ -729,6 +751,7 @@ export interface SettingsUpdate {
   model?: string;
   provider?: string;
   modelPreset?: string | null;
+  smartModelRoutingEnabled?: boolean;
   contextWindowTokens?: number;
   timezone?: string;
   botName?: string;
@@ -830,6 +853,34 @@ export interface InboundTurnMetadata {
   turn_seq?: number;
 }
 
+export type ModelRoutingDecisionReason =
+  | "initial_candidate"
+  | "initial_baseline"
+  | "candidate_unchanged"
+  | "same_cache_identity"
+  | "switched_score"
+  | "kept_for_cache"
+  | "classifier_fallback"
+  | "no_candidate_affinity"
+  | "no_candidate_baseline"
+  | "deterministic_rule"
+  | "dream_override";
+
+export interface TurnModelRoutePayload {
+  model_name: string;
+  model_preset?: string | null;
+  task_kind?: string;
+  task_type?: string | null;
+  complexity?: string | null;
+  candidate_model_name?: string | null;
+  candidate_model_preset?: string | null;
+  decision_reason?: ModelRoutingDecisionReason | null;
+  switch_score?: number | null;
+  quality_benefit?: number | null;
+  cache_penalty?: number | null;
+  estimated_reusable_tokens?: number;
+}
+
 export type InboundEvent =
   | { event: "ready"; chat_id: string; client_id: string }
   | { event: "attached"; chat_id: string }
@@ -884,6 +935,23 @@ export type InboundEvent =
       model_name: string;
       model_preset?: string | null;
     }
+  | ({
+      event: "turn_model_routed";
+      chat_id: string;
+      model_name: string;
+      model_preset?: string | null;
+      task_kind?: string;
+      task_type?: string | null;
+      complexity?: string | null;
+      candidate_model_name?: string | null;
+      candidate_model_preset?: string | null;
+      decision_reason?: ModelRoutingDecisionReason | null;
+      switch_score?: number | null;
+      quality_benefit?: number | null;
+      cache_penalty?: number | null;
+      estimated_reusable_tokens?: number;
+      ephemeral?: boolean;
+    } & InboundTurnMetadata)
   | ({
       event: "turn_end";
       chat_id: string;

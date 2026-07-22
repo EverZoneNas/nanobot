@@ -90,6 +90,8 @@ nano.*.save
 # Environment & secrets (keep examples tracked if needed)
 .env.*
 !.env.example
+start-nanobot.sh
+!start-nanobot.sh.example
 
 # Logs & temp
 *.log
@@ -100,3 +102,9 @@ temp/
 exp/
 .playwright-mcp/
 bridge/node_modules/
+
+# Gateway / WebUI runtime (when config lives in repo root)
+run/
+cli-apps/
+webui/token-usage.json
+webui/websocket_*.jsonl
